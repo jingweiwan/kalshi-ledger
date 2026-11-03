@@ -2,8 +2,8 @@
 
 和朋友合买 Kalshi 的记账本。你先下单，朋友看了也想跟，你再用同一个账户帮他买。账本把每一笔成交记在各自名下，随时算清你手里有多少是朋友的钱。
 
-- 网址：https://jingweiwan.github.io/kalshi-ledger/
-- 先看看示例：https://jingweiwan.github.io/kalshi-ledger/?demo
+- 网址：国内请用自己的域名打开（见下面「国内访问：Cloudflare 转发」）；海外可以直接用 https://jingweiwan.github.io/kalshi-ledger/
+- 先看看示例：在网址后面加 `?demo`
 
 ## 记账规则
 
@@ -34,7 +34,25 @@
 
 仓库 **Settings → Pages**，Source 选 **Deploy from a branch**，分支选 `main`、目录选 `/ (root)`。
 
-### 3. 你们俩注册
+### 3. 国内访问：Cloudflare 转发
+
+国内直接连不上 supabase.co，github.io 也不稳定。用 Cloudflare 上的一个小程序（[`proxy/worker.js`](proxy/worker.js)）转发：
+你们只访问自己的域名，网页和数据都经过它。
+
+1. 注册 Cloudflare：https://dash.cloudflare.com/sign-up
+2. 买域名：https://dash.cloudflare.com/?to=/:account/domains/register
+   搜一个名字买下来，比如 `xxx-ledger.com`（.com 大约一年 10 美元，要绑信用卡或 PayPal）。在 Cloudflare 买的域名不用再做别的设置。
+3. 建转发程序：https://dash.cloudflare.com/?to=/:account/workers-and-pages/create
+   选 **Create Worker**（从 Hello World 开始），名字填 `kalshi-ledger`，点 **Deploy**。
+   然后点 **Edit code**，把 [`proxy/worker.js`](proxy/worker.js) 的内容整个替换进去，再点 **Deploy**。
+4. 绑域名：在这个 Worker 的 **Settings → Domains & Routes → Add → Custom domain**，填 `ledger.你的域名`（比如 `ledger.xxx-ledger.com`），点 **Add**。等几分钟证书生效。
+5. 打开 `https://ledger.你的域名/`，能看到登录页就好了。
+
+注意：Supabase 的 **Confirm email** 一定要关掉。确认邮件里的链接指向 supabase.co，国内点不开。
+
+从自己的域名打开时，网页会自动通过 `/sb` 走转发（见 [`js/config.js`](js/config.js)），不用改配置。
+
+### 4. 你们俩注册
 
 - **持有人**：打开网址 → 注册 → 选「我是 Kalshi 账户持有人」→ 首页会出现邀请码。
 - **朋友**：打开网址 → 注册 → 选「我是跟单的朋友」→ 输入邀请码。
@@ -77,8 +95,9 @@
 | `js/app.js` | 页面 |
 | `js/store.js` | 读写 Supabase；没配置时用示例数据 |
 | `js/statement-image.js` | 对账单图片和文字 |
+| `proxy/worker.js` | Cloudflare 转发：`/sb/...` 转给 Supabase，其他转给 GitHub Pages |
 | `supabase/schema.sql` | 数据库表、权限（只有持有人能记账，记录不能改不能删）、确认和对账单函数 |
-| `tests/` | 计算测试、数据库权限测试 |
+| `tests/` | 计算测试、转发测试、数据库权限测试 |
 
 本地运行：
 
