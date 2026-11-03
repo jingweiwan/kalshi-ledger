@@ -1,5 +1,6 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
 import { money, signed, price, dt, full, day } from './format.js';
+import { avgFillPrice } from './ledger.js';
 
 const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
 const title = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '');
@@ -14,7 +15,7 @@ function describe(e, gameById) {
   }
   if (e.kind === 'fill') {
     return {
-      label: `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张 @${price(e.price_cents)}`,
+      label: `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张 @${price(avgFillPrice(e))}`,
       sub: `${title(g)} · ${dt(e.occurred_at)}`,
     };
   }

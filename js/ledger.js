@@ -21,10 +21,19 @@ export function needsConfirm(e) {
   return e.kind !== 'fill' || e.holder === 'partner';
 }
 
+/** 成交额（不含手续费）。按金额记的直接存 notional_cents；按单价记的旧记录用 张数 × 单价。 */
+export function notional(e) {
+  return e.notional_cents ?? e.contracts * e.price_cents;
+}
+
+/** 这笔的平均成交价（分/张，可能带小数，比如分几档成交的 61.3¢） */
+export function avgFillPrice(e) {
+  return notional(e) / e.contracts;
+}
+
+/** 买入的总成本（含手续费）/ 卖出的到手金额（扣掉手续费） */
 export function fillAmount(e) {
-  return e.action === 'buy'
-    ? e.contracts * e.price_cents + e.fee_cents
-    : e.contracts * e.price_cents - e.fee_cents;
+  return e.action === 'buy' ? notional(e) + e.fee_cents : notional(e) - e.fee_cents;
 }
 
 function newSide() {
@@ -94,7 +103,7 @@ export function compute(events, games = []) {
         pos.contracts += e.contracts;
         pos.basis += cost;
         pos.boughtContracts += e.contracts;
-        pos.boughtNotional += e.contracts * e.price_cents;
+        pos.boughtNotional += notional(e);
         if (!pos.firstBuyAt) pos.firstBuyAt = e.occurred_at;
         h.bought = true;
         h.buyCost += cost;
@@ -305,7 +314,7 @@ export function statement(result, events, lastStatement, games = []) {
 export function toCSV(events, games, names) {
   const gameById = new Map(games.map((g) => [g.id, g]));
   const result = compute(events, games);
-  const head = ['编号', '时间', '类型', '谁', '比赛', '方向', '张数', '价格(¢)', '手续费($)', '金额($)', '朋友余额变化($)', '朋友余额($)', '状态', '备注'];
+  const head = ['编号', '时间', '类型', '谁', '比赛', '方向', '张数', '均价(¢)', '成交额($)', '手续费($)', '金额($)', '朋友余额变化($)', '朋友余额($)', '状态', '备注'];
   const kindName = { transfer: '转账', fill: '成交', settle: '结算', void: '撤销' };
   const rows = [...events].sort((x, y) => x.id - y.id).map((e) => {
     const g = e.game_id ? gameById.get(e.game_id) : null;
@@ -322,7 +331,8 @@ export function toCSV(events, games, names) {
       g ? `${g.team_a} vs ${g.team_b}` : '',
       sideName,
       e.contracts ?? '',
-      e.price_cents ?? '',
+      e.kind === 'fill' ? +avgFillPrice(e).toFixed(2) : '',
+      e.kind === 'fill' ? (notional(e) / 100).toFixed(2) : '',
       e.fee_cents != null ? (e.fee_cents / 100).toFixed(2) : '',
       amount != null ? (amount / 100).toFixed(2) : '',
       eff ? (eff.partnerDelta / 100).toFixed(2) : '',

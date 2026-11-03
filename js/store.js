@@ -133,7 +133,7 @@ function demoStore(notConfigured) {
       const e = {
         id: nextEvent, created_at: now(), occurred_at: now(), created_by: SAMPLE_OWNER_ID,
         direction: null, amount_cents: null, method: null, game_id: null, holder: null, action: null, side: null,
-        contracts: null, price_cents: null, fee_cents: null, winner: null, voids: null, note: null,
+        contracts: null, price_cents: null, notional_cents: null, fee_cents: null, winner: null, voids: null, note: null,
         confirmed_at: null, confirmed_via: null, statement_no: null, ...row,
       };
       if (e.kind === 'void') {

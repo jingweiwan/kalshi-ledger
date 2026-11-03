@@ -55,10 +55,16 @@ select pg_temp.must_fail(format('update public.ledgers set partner_name = ''x'' 
 select pg_temp.must_fail(format('select public.confirm_events(%L, 999)', :'ledger_id'), '持有人替朋友在 App 里确认');
 select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, price_cents, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 1, 100, 0)', :'ledger_id', :'g1'), '价格 100¢');
 select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id) values (%L, ''fill'', %L)', :'ledger_id', :'g1'), '成交缺字段');
+-- 按 Cost / Fee / Max payout 记：只有成交额，没有整数单价
+insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents)
+  values (:'ledger_id', 'fill', :'g1', 'owner', 'buy', 'a', 30, 1840, 50);
+\echo PASS 按金额记的成交（均价 61.3¢）可以保存
+select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 30, 3000, 0)', :'ledger_id', :'g1'), '均价 100¢');
+select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 30, 0)', :'ledger_id', :'g1'), '没有单价也没有成交额');
 
 -- 朋友只能看，不能记
 select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
-do $$ begin if (select count(*) from public.events) <> 3 then raise exception 'FAIL: 朋友看到的记录数不对'; end if; raise notice 'PASS 朋友能看到 3 条记录'; end $$;
+do $$ begin if (select count(*) from public.events) <> 4 then raise exception 'FAIL: 朋友看到的记录数不对'; end if; raise notice 'PASS 朋友能看到 4 条记录'; end $$;
 select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, direction, amount_cents) values (%L, ''transfer'', ''to_partner'', 100)', :'ledger_id'), '朋友记账');
 select pg_temp.must_fail(format('insert into public.games (ledger_id, team_a, team_b) values (%L, ''a'', ''b'')', :'ledger_id'), '朋友建比赛');
 select pg_temp.must_fail(format('update public.events set confirmed_at = now() where ledger_id = %L', :'ledger_id'), '朋友直接改确认字段');

@@ -49,7 +49,8 @@ create table if not exists public.events (
   action text check (action in ('buy', 'sell')),
   side text check (side in ('a', 'b')),
   contracts integer check (contracts > 0),
-  price_cents integer check (price_cents between 1 and 99),
+  price_cents integer check (price_cents between 1 and 99),   -- 按单价记时的单价；按金额记、均价不是整数时为空
+  notional_cents integer check (notional_cents > 0),            -- 成交额（不含手续费）= 张数 × 均价
   fee_cents integer check (fee_cents >= 0),
   -- 结算
   winner text check (winner in ('a', 'b')),
@@ -64,11 +65,24 @@ create table if not exists public.events (
   foreign key (ledger_id, game_id) references public.games (ledger_id, id),
   constraint transfer_fields check (kind <> 'transfer' or (direction is not null and amount_cents is not null)),
   constraint fill_fields check (kind <> 'fill' or (game_id is not null and holder is not null and action is not null
-    and side is not null and contracts is not null and price_cents is not null and fee_cents is not null)),
+    and side is not null and contracts is not null and fee_cents is not null
+    and (price_cents is not null or notional_cents is not null))),
+  constraint fill_notional check (notional_cents is null or contracts is null
+    or notional_cents between contracts and contracts * 99),
   constraint settle_fields check (kind <> 'settle' or (game_id is not null and winner is not null)),
   constraint void_fields check (kind <> 'void' or voids is not null)
 );
 create index if not exists events_ledger_idx on public.events (ledger_id, id);
+
+-- 升级：之前运行过旧版本的，再运行一次这个文件就会补上「成交额」这一列
+alter table public.events add column if not exists notional_cents integer check (notional_cents > 0);
+alter table public.events drop constraint if exists fill_fields;
+alter table public.events add constraint fill_fields check (kind <> 'fill' or (game_id is not null and holder is not null
+  and action is not null and side is not null and contracts is not null and fee_cents is not null
+  and (price_cents is not null or notional_cents is not null)));
+alter table public.events drop constraint if exists fill_notional;
+alter table public.events add constraint fill_notional check (notional_cents is null or contracts is null
+  or notional_cents between contracts and contracts * 99);
 
 create table if not exists public.statements (
   id bigint generated always as identity primary key,

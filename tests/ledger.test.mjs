@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compute, stats, statement, estimateFee, toCSV, needsConfirm } from '../js/ledger.js';
+import { compute, stats, statement, estimateFee, toCSV, needsConfirm, notional, avgFillPrice, fillAmount } from '../js/ledger.js';
 import { sampleData } from '../js/sample.js';
 
 test('手续费估算和设计图一致', () => {
@@ -144,5 +144,32 @@ test('CSV 导出有表头和每条记录', () => {
   const lines = csv.trim().split('\n');
   assert.equal(lines.length, events.length + 1);
   assert.match(lines[0], /编号,时间,类型/);
-  assert.match(lines[9], /阿杰.*掘金 vs 太阳.*掘金赢,30,61,0.50,18.80,-18.80,191.97,待确认/);
+  assert.match(lines[9], /阿杰.*掘金 vs 太阳.*掘金赢,30,61,18.30,0.50,18.80,-18.80,191.97,待确认/);
+});
+
+test('按 Cost / Fee / Max payout 记：成交额直接用，均价可以带小数', () => {
+  const e = { kind: 'fill', action: 'buy', contracts: 30, price_cents: null, notional_cents: 1840, fee_cents: 50 };
+  assert.equal(notional(e), 1840);
+  assert.equal(fillAmount(e), 1890);
+  assert.equal(avgFillPrice(e).toFixed(2), '61.33');
+  const old = { kind: 'fill', action: 'buy', contracts: 30, price_cents: 61, fee_cents: 50 };
+  assert.equal(notional(old), 1830);
+});
+
+test('按金额记的买入和卖出，余额、持仓、滑点都按成交额算', () => {
+  const { events, games } = sampleData();
+  const buy = { id: 10, kind: 'fill', occurred_at: '2026-11-03T19:50:00-08:00', game_id: 'g3', holder: 'partner', action: 'buy', side: 'a', contracts: 30, price_cents: null, notional_cents: 1840, fee_cents: 50 };
+  const sell = { id: 11, kind: 'fill', occurred_at: '2026-11-03T20:10:00-08:00', game_id: 'g3', holder: 'partner', action: 'sell', side: 'a', contracts: 20, price_cents: null, notional_cents: 1410, fee_cents: 30 };
+  const r = compute([...events, buy, sell], games);
+  assert.equal(r.effects.get(10).partnerDelta, -1890);
+  assert.equal(r.effects.get(11).partnerDelta, 1380);
+  const pos = r.games.find((g) => g.id === 'g3').holders.partner.sides.a;
+  assert.equal(pos.contracts, 40);
+  // 60 张总成本 1880 + 1890 = 3770，卖 20 张结转 1257
+  assert.equal(pos.basis, 3770 - 1257);
+  assert.equal(r.transfersIn - r.transfersOut + r.realized.partner - r.openBasis.partner, r.balance);
+  // 均价 (1830 + 1840) / 60 = 61.17¢，比持有人 58¢ 贵
+  const s = stats(r);
+  const slip = s.slips.find((x) => x.gameId === 'g3');
+  assert.equal(slip.diff.toFixed(2), (3670 / 60 - 58).toFixed(2));
 });

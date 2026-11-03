@@ -1,5 +1,5 @@
 // 合买账本 · 页面
-import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, toCSV, SIDES } from './ledger.js';
+import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, SIDES } from './ledger.js';
 import { createStore } from './store.js';
 import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, parseCount } from './format.js';
 import { statementModel, statementText, drawStatement } from './statement-image.js';
@@ -264,7 +264,7 @@ function describe(e) {
     return { title: `转账 ${nameOf(from)} → ${nameOf(other(from))}`, sub: e.method || '' };
   }
   if (e.kind === 'fill') {
-    return { title: `${nameOf(e.holder)}${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张`, sub: `@${price(e.price_cents)} · ${gameTitle(g)}` };
+    return { title: `${nameOf(e.holder)}${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张`, sub: `@${price(avgFillPrice(e))} · ${gameTitle(g)}` };
   }
   if (e.kind === 'settle') return { title: `结算 ${sideName(g, e.winner)}`, sub: gameTitle(g) };
   const t = S.eventById.get(e.voids);
@@ -412,6 +412,8 @@ function viewFill() {
     else if (ownerSide) side = ownerSide;
   }
   const action = q.get('action') === 'sell' ? 'sell' : 'buy';
+  let mode = 'price';
+  try { if (localStorage.getItem('kl.fillMode') === 'amount') mode = 'amount'; } catch { /* 无痕模式等读不到，用默认 */ }
   const radio = (name, value, checked, label, cls = '') =>
     `<label class="${cls}"><input type="radio" name="${name}" value="${value}" ${checked ? 'checked' : ''}><span>${label}</span></label>`;
   S.after = () => updateFill(document.querySelector('form[data-form="fill"]'));
@@ -434,10 +436,15 @@ function viewFill() {
       <div class="seg radios">${radio('holder', 'owner', holder === 'owner', `${av('owner', 'sm')}我`)}${radio('holder', 'partner', holder === 'partner', `${av('partner', 'sm')}${esc(fullName('partner'))}`)}</div>
       <span class="field-l" id="f-side-l">${action === 'sell' ? '卖哪边' : '买哪边'}</span>
       <div class="yn radios">${radio('side', 'a', side === 'a', '<span id="f-side-a">A赢</span>')}${radio('side', 'b', side === 'b', '<span id="f-side-b">B赢</span>')}</div>
+      <span class="field-l">怎么填</span>
+      <div class="seg radios small">${radio('mode', 'price', mode === 'price', '张数 + 单价')}${radio('mode', 'amount', mode === 'amount', '<span id="f-mode-amount">Cost / Fee / Max payout</span>')}</div>
       <div class="tk-rows">
-        <label class="tk"><span>张数</span><input class="tk-in num" name="contracts" id="f-contracts" inputmode="numeric" placeholder="0" autocomplete="off"></label>
-        <label class="tk"><span>成交价（¢）</span><input class="tk-in num" name="price" id="f-price" inputmode="numeric" placeholder="1–99" autocomplete="off"></label>
-        <label class="tk"><span>手续费（$）</span><input class="tk-in num" name="fee" id="f-fee" inputmode="decimal" placeholder="自动估算" autocomplete="off"></label>
+        <label class="tk" id="row-contracts"><span>张数</span><input class="tk-in num" name="contracts" id="f-contracts" inputmode="numeric" placeholder="0" autocomplete="off"></label>
+        <label class="tk" id="row-price"><span>成交价（¢）</span><input class="tk-in num" name="price" id="f-price" inputmode="numeric" placeholder="1–99" autocomplete="off"></label>
+        <label class="tk" id="row-cost" hidden><span id="f-cost-l">Cost（$）</span><input class="tk-in num" name="cost" id="f-cost" inputmode="decimal" placeholder="0.00" autocomplete="off"></label>
+        <label class="tk"><span>手续费 Fee（$）</span><input class="tk-in num" name="fee" id="f-fee" inputmode="decimal" placeholder="自动估算" autocomplete="off"></label>
+        <label class="tk" id="row-max" hidden><span>Max payout（$）</span><input class="tk-in num" name="maxpayout" id="f-max" inputmode="decimal" placeholder="0.00" autocomplete="off"></label>
+        <label class="tk check" id="row-hasfee" hidden><span id="f-hasfee-l">Cost 已经包含手续费</span><input type="checkbox" name="has_fee" id="f-hasfee"></label>
         <label class="tk"><span>成交时间</span><input class="tk-in small" type="datetime-local" name="at" id="f-at" value="${localInput()}"></label>
       </div>
       <div id="f-summary" class="summary"></div>
@@ -456,11 +463,34 @@ function readFill(f) {
   out.teamA = v.game === 'new' ? (v.team_a || '').trim() : st?.game.team_a;
   out.teamB = v.game === 'new' ? (v.team_b || '').trim() : st?.game.team_b;
   out.startsAt = v.starts_at ? new Date(v.starts_at).toISOString() : null;
-  out.contracts = parseCount(v.contracts);
-  out.price = parseCount(v.price);
-  out.feeEstimate = estimateFee(out.contracts, out.price);
-  out.fee = String(v.fee || '').trim() === '' ? out.feeEstimate : parseMoney(v.fee);
-  out.feeIsEstimate = String(v.fee || '').trim() === '';
+  out.mode = v.mode === 'amount' ? 'amount' : 'price';
+  out.hasFee = v.has_fee === 'on';
+  const feeBlank = String(v.fee || '').trim() === '';
+  let amount = NaN, maxPayoutBad = false;
+  if (out.mode === 'price') {
+    out.contracts = parseCount(v.contracts);
+    out.price = parseCount(v.price);
+    out.notional = out.contracts * out.price;
+    out.feeEstimate = estimateFee(out.contracts, out.price);
+    out.fee = feeBlank ? out.feeEstimate : parseMoney(v.fee);
+    out.feeIsEstimate = feeBlank;
+  } else {
+    // 照 Kalshi 显示的金额记：买入填 Cost / Fee / Max payout（每张最多赔付 $1，所以 Max payout 就是张数）
+    amount = parseMoney(v.cost);
+    if (out.action === 'buy') {
+      const mp = parseMoney(v.maxpayout);
+      maxPayoutBad = mp > 0 && mp % 100 !== 0;
+      out.contracts = mp > 0 && !maxPayoutBad ? mp / 100 : NaN;
+    } else {
+      out.contracts = parseCount(v.contracts);
+    }
+    out.feeEstimate = 0;
+    out.feeIsEstimate = false;
+    out.fee = feeBlank ? NaN : parseMoney(v.fee);
+    out.notional = Number.isNaN(amount) || Number.isNaN(out.fee) ? NaN
+      : out.hasFee ? (out.action === 'buy' ? amount - out.fee : amount + out.fee) : amount;
+    out.price = out.contracts > 0 ? out.notional / out.contracts : NaN;
+  }
   out.at = v.at ? new Date(v.at) : null;
   out.held = st && out.holder && out.side ? st.holders[out.holder].sides[out.side].contracts : 0;
   const errs = [];
@@ -469,10 +499,24 @@ function readFill(f) {
     else if (out.teamA === out.teamB) errs.push('两支球队不能一样');
   }
   if (out.action === 'sell' && v.game === 'new') errs.push('卖出要选一场已有的比赛');
-  if (!(out.contracts > 0)) errs.push('张数要是正整数');
-  else if (out.contracts > 1000000) errs.push('张数太大了');
-  if (!(out.price >= 1 && out.price <= 99)) errs.push('成交价是 1 到 99 之间的整数（单位：美分）');
-  if (Number.isNaN(out.fee) || out.fee < 0) errs.push('手续费格式不对，比如 0.50');
+  if (out.mode === 'amount' && out.action === 'buy') {
+    if (maxPayoutBad) errs.push('Max payout 应该是整数美元（每张赔付 $1）');
+    else if (!(out.contracts > 0)) errs.push('填上 Max payout');
+  } else if (!(out.contracts > 0)) errs.push('张数要是正整数');
+  if (out.contracts > 1000000) errs.push('张数太大了');
+  if (out.mode === 'price') {
+    if (!(out.price >= 1 && out.price <= 99)) errs.push('成交价是 1 到 99 之间的整数（单位：美分）');
+    if (Number.isNaN(out.fee) || out.fee < 0) errs.push('手续费格式不对，比如 0.50');
+  } else {
+    if (Number.isNaN(amount)) errs.push(out.action === 'buy' ? '填上 Cost，比如 18.30' : '填上卖出金额，比如 21.00');
+    if (feeBlank) errs.push('填上 Fee（Kalshi 上显示的手续费）');
+    else if (Number.isNaN(out.fee) || out.fee < 0) errs.push('Fee 格式不对，比如 0.50');
+    if (out.contracts > 0 && out.notional > 0 && !(out.notional >= out.contracts && out.notional <= out.contracts * 99)) {
+      errs.push(`算出来均价是 ${price(out.price)}，不在 1¢–99¢ 之间，检查一下数字`);
+    } else if (out.contracts > 0 && !Number.isNaN(out.notional) && out.notional <= 0) {
+      errs.push('Cost 要大于 Fee');
+    }
+  }
   if (!out.at || Number.isNaN(out.at.getTime())) errs.push('填一下成交时间');
   if (out.action === 'sell' && out.contracts > out.held) errs.push(`${nameOf(out.holder)}在这边只持有 ${out.held} 张`);
   out.errors = errs;
@@ -486,17 +530,28 @@ function updateFill(f) {
   f.querySelector('#f-side-a').textContent = `${v.teamA || 'A'}赢`;
   f.querySelector('#f-side-b').textContent = `${v.teamB || 'B'}赢`;
   f.querySelector('#f-side-l').textContent = v.action === 'sell' ? '卖哪边' : '买哪边';
-  f.querySelector('#f-fee').placeholder = v.feeEstimate ? `估算 $${(v.feeEstimate / 100).toFixed(2)}` : '自动估算';
+  const amountMode = v.mode === 'amount', buy = v.action === 'buy';
+  f.querySelector('#row-contracts').hidden = amountMode && buy;
+  f.querySelector('#row-price').hidden = amountMode;
+  f.querySelector('#row-cost').hidden = !amountMode;
+  f.querySelector('#row-max').hidden = !(amountMode && buy);
+  f.querySelector('#row-hasfee').hidden = !amountMode;
+  f.querySelector('#f-cost-l').textContent = buy ? 'Cost（$）' : '卖出金额（$）';
+  f.querySelector('#f-hasfee-l').textContent = buy ? 'Cost 已经包含手续费' : '卖出金额已经扣掉手续费';
+  f.querySelector('#f-mode-amount').textContent = buy ? 'Cost / Fee / Max payout' : '张数 + 金额';
+  try { localStorage.setItem('kl.fillMode', v.mode); } catch { /* 存不了就算了 */ }
+  f.querySelector('#f-fee').placeholder = amountMode ? 'Kalshi 上的 Fee' : v.feeEstimate ? `估算 $${(v.feeEstimate / 100).toFixed(2)}` : '自动估算';
   f.querySelector('#f-submit').textContent = v.holder === 'partner' ? `保存，等${fullName('partner')}确认` : '保存';
   const sum = f.querySelector('#f-summary');
   const c = v.contracts, p = v.price;
-  if (!(c > 0) || !(p >= 1 && p <= 99) || Number.isNaN(v.fee)) {
+  if (!(c > 0) || !(p >= 1 && p <= 99) || Number.isNaN(v.fee) || Number.isNaN(v.notional)) {
     sum.innerHTML = v.action === 'sell' && v.st ? `<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${v.held}张</b></div>` : '';
     return;
   }
   const feeTxt = v.feeIsEstimate ? `（手续费按估算 ${money(v.fee)}）` : '';
+  const derived = amountMode ? `<div class="kv"><span class="sub">折算</span><b class="num">${c}张 · 均价 ${price(p)}</b></div>` : '';
   if (v.action === 'buy') {
-    const cost = c * p + v.fee;
+    const cost = v.notional + v.fee;
     const win = c * 100;
     let note = '';
     if (v.holder === 'partner' && v.st) {
@@ -508,13 +563,13 @@ function updateFill(f) {
         }
       }
     }
-    sum.innerHTML = `<div class="tk sum"><span class="sub">成本 ${esc(feeTxt)}</span><b class="num">${money(cost)}</b></div>
+    sum.innerHTML = `${derived}<div class="tk sum"><span class="sub">成本 ${esc(feeTxt)}</span><b class="num">${money(cost)}</b></div>
       <div class="tk sum"><span class="sub">${esc(v.side === 'a' ? v.teamA || 'A' : v.teamB || 'B')}赢的话回款</span><b class="num up">${money(win)} <span class="sub up">${signed(win - cost)}</span></b></div>${note}`;
   } else {
-    const proceeds = c * p - v.fee;
+    const proceeds = v.notional - v.fee;
     const pos = v.st ? v.st.holders[v.holder].sides[v.side] : null;
     const basisOut = pos && pos.contracts ? Math.round((pos.basis * Math.min(c, pos.contracts)) / pos.contracts) : 0;
-    sum.innerHTML = `<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${v.held}张</b></div>
+    sum.innerHTML = `${derived}<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${v.held}张</b></div>
       <div class="tk sum"><span class="sub">卖出回款 ${esc(feeTxt)}</span><b class="num">${money(proceeds)}</b></div>
       <div class="tk sum"><span class="sub">这几张的盈亏（按平均成本）</span><b class="num ${tone(proceeds - basisOut)}">${signed(proceeds - basisOut)}</b></div>`;
   }
@@ -614,7 +669,7 @@ function openEvent(id) {
   const rows = [['时间', full(e.occurred_at)]];
   if (e.kind === 'fill') {
     rows.push(['比赛', gameTitle(g)], ['方向', `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)}`],
-      ['张数 × 价格', `${e.contracts} × ${price(e.price_cents)}`], ['手续费', money(e.fee_cents)],
+      ['张数 · 均价', `${e.contracts} 张 · ${price(avgFillPrice(e))}`], ['成交额', money(notional(e))], ['手续费', money(e.fee_cents)],
       [e.action === 'buy' ? '成本' : '回款', money(fillAmount(e))]);
   }
   if (e.kind === 'transfer') rows.push(['金额', money(e.amount_cents)], ['方式', e.method || '—']);
@@ -848,7 +903,8 @@ const FORMS = {
     }
     await S.store.addEvent({
       ledger_id: S.ledger.id, kind: 'fill', game_id: gameId, holder: v.holder, action: v.action, side: v.side,
-      contracts: v.contracts, price_cents: v.price, fee_cents: v.fee, occurred_at: v.at.toISOString(), note: v.note,
+      contracts: v.contracts, price_cents: Number.isInteger(v.price) ? v.price : null, notional_cents: v.notional,
+      fee_cents: v.fee, occurred_at: v.at.toISOString(), note: v.note,
     });
     await reload();
     toast('已保存');
