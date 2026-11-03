@@ -1,9 +1,9 @@
 // 合买账本 · 页面
-import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js';
-import { createStore } from './store.js';
-import { PUBLIC_URL } from './config.js';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js';
-import { statementModel, statementText, drawStatement } from './statement-image.js';
+import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw0j604m';
+import { createStore } from './store.js?v=mw0j604m';
+import { PUBLIC_URL } from './config.js?v=mw0j604m';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw0j604m';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw0j604m';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
@@ -373,7 +373,7 @@ function viewHome() {
   const open = openGames();
   const recent = [...S.data.events].sort((a, b2) => b2.id - a.id).slice(0, 5);
   return `
-    <div class="hdr"><a class="avs" href="#/settings" aria-label="设置">${av('owner')}${av('partner')}</a>
+    <div class="hdr"><a class="hdr-set" href="#/settings"><span class="avs">${av('owner')}${av('partner')}</span><span class="set-l">设置 ›</span></a>
       <a class="chip-btn" href="#/statement">${ICON.share}对账单</a></div>
     <div class="hero-n">
       <span class="lbl">${esc(balanceLabel(b))}</span>

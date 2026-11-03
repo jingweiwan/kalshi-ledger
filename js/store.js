@@ -1,7 +1,7 @@
 // 数据存取：Supabase（正式）或内存（示例模式），两者接口一样。
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js';
-import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js';
-import { compute } from './ledger.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mw0j604m';
+import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mw0j604m';
+import { compute } from './ledger.js?v=mw0j604m';
 
 export function createStore() {
   const wantsDemo = new URLSearchParams(location.search).has('demo');

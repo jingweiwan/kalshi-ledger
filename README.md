@@ -139,4 +139,6 @@ python3 -m http.server 8000
 npm test
 ```
 
+改完网页代码提交前，运行一次 `node scripts/stamp-version.mjs` 给 JS / CSS 加版本号，推送后浏览器马上用新版本。
+
 数据库权限测试需要本地 Postgres：依次运行 `tests/supabase_stub.sql`、`supabase/schema.sql`、`tests/rls_test.sql`。
