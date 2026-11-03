@@ -2,7 +2,8 @@
 
 和朋友合买 Kalshi 的记账本。你先下单，朋友看了也想跟，你再用同一个账户帮他买。账本把每一笔成交记在各自名下，随时算清你手里有多少是朋友的钱。
 
-- 网址：国内请用自己的域名打开（见下面「国内访问：Cloudflare 转发」）；海外可以直接用 https://jingweiwan.github.io/kalshi-ledger/
+- 网址：https://ledger.ericpersonal.trade/ （经过 Cloudflare 转发，国内能直接用；见下面「国内访问：Cloudflare 转发」）
+- 备用：https://jingweiwan.github.io/kalshi-ledger/ （国内打开时会自动跳到上面的网址）
 - 先看看示例：在网址后面加 `?demo`
 
 ## 记账规则

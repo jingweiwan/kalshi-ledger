@@ -1,6 +1,7 @@
 // 合买账本 · 页面
 import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, SIDES } from './ledger.js';
 import { createStore } from './store.js';
+import { PUBLIC_URL } from './config.js';
 import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, parseCount } from './format.js';
 import { statementModel, statementText, drawStatement } from './statement-image.js';
 
@@ -970,7 +971,21 @@ document.addEventListener('visibilitychange', async () => {
   try { await reload(); render(); } catch { /* 下次再试 */ }
 });
 
+// 从 github.io 打开时，如果国内用的新网址能访问，就跳过去（打不开就留在这里）
+async function moveToPublicUrl() {
+  if (!PUBLIC_URL || !/(^|\.)github\.io$/.test(location.hostname)) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    await fetch(PUBLIC_URL + 'manifest.webmanifest', { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal });
+    location.replace(PUBLIC_URL + location.search + location.hash);
+  } catch { /* 新网址打不开 */ } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function boot() {
+  moveToPublicUrl();
   try {
     S.store = createStore();
     S.user = await S.store.user();
