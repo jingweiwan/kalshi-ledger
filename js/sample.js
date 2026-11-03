@@ -42,5 +42,15 @@ export function sampleData() {
     { id: 1, ledger_id: ledger.id, no: 1, balance_cents: 22663, upto_event_id: 4, created_at: '2026-11-01T23:00:00-08:00', confirmed_at: s1.at, confirmed_via: 'wechat' },
     { id: 2, ledger_id: ledger.id, no: 2, balance_cents: 21077, upto_event_id: 7, created_at: '2026-11-02T22:30:00-08:00', confirmed_at: s2.at, confirmed_via: 'wechat' },
   ];
-  return { ledger, games, events, statements };
+  // 从 Kalshi 同步过来、还没分配的成交
+  const kf = (id, fields) => ({ ledger_id: ledger.id, id, event_ticker: 'KXNBAGAME-26NOV04GSWHOU', market_ticker: 'KXNBAGAME-26NOV04GSWHOU-GSW',
+    team_a: '勇士', team_b: '火箭', starts_at: null, status: 'pending', event_id: null, fee_dollars: null, ...fields });
+  const kalshi = [
+    // 同一个订单分两次成交，账本里合成一行
+    kf('demo-k1', { order_id: 'demo-o1', side: 'a', action: 'buy', contracts: 34.91, price_cents: 52, notional_cents: 1815, fee_cents: 61, occurred_at: '2026-11-04T18:47:09-08:00' }),
+    kf('demo-k2', { order_id: 'demo-o1', side: 'a', action: 'buy', contracts: 20, price_cents: 55, notional_cents: 1100, fee_cents: 35, occurred_at: '2026-11-04T18:47:10-08:00' }),
+    kf('demo-k3', { order_id: 'demo-o2', market_ticker: 'KXNBAGAME-26NOV04GSWHOU-HOU', side: 'b', action: 'buy', contracts: 5, price_cents: 48, notional_cents: 240, fee_cents: 9, occurred_at: '2026-11-04T19:30:00-08:00' }),
+  ];
+  const kalshiSync = { since: '2026-11-01', last_run_at: '2026-11-04T19:15:00-08:00', last_imported: 2, last_message: null };
+  return { ledger, games, events, statements, kalshi, kalshiSync };
 }

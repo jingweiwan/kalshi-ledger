@@ -1,0 +1,25 @@
+name: Kalshi 同步
+on:
+  schedule:
+    - cron: '7 * * * *'   # 每小时第 7 分钟（GitHub 可能会晚几分钟）
+  workflow_dispatch:       # 也可以在 Actions 页面手动点 Run workflow
+concurrency:
+  group: kalshi-sync
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 从 Kalshi 拉成交写进账本
+        env:
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
+          KL_SYNC_TOKEN: ${{ secrets.KL_SYNC_TOKEN }}
+        run: node sync/kalshi-sync.mjs

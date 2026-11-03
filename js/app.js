@@ -1,8 +1,8 @@
 // 合买账本 · 页面
-import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, SIDES } from './ledger.js';
+import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js';
 import { createStore } from './store.js';
 import { PUBLIC_URL } from './config.js';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, parseCount } from './format.js';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js';
 import { statementModel, statementText, drawStatement } from './statement-image.js';
 
 const $app = document.getElementById('app');
@@ -17,6 +17,8 @@ const S = {
   params: { id: null, q: new URLSearchParams() },
   authMode: 'signin', after: null, lastHash: null,
 };
+
+const REPO_URL = 'https://github.com/jingweiwan/kalshi-ledger';
 
 const TEAMS = ['老鹰', '凯尔特人', '篮网', '黄蜂', '公牛', '骑士', '独行侠', '掘金', '活塞', '勇士', '火箭', '步行者', '快船', '湖人', '灰熊', '热火', '雄鹿', '森林狼', '鹈鹕', '尼克斯', '雷霆', '魔术', '76人', '太阳', '开拓者', '国王', '马刺', '猛龙', '爵士', '奇才'];
 
@@ -141,6 +143,7 @@ function render() {
   else {
     const { name, id, q } = parseHash();
     const [view, t] = ROUTES[name] || ROUTES[''];
+    if (name !== 'settings') S.kxToken = null;
     S.params = { id, q };
     html = view();
     tab = t;
@@ -239,7 +242,7 @@ function holdingsText(g) {
   for (const side of SIDES) {
     const o = g.holders.owner.sides[side].contracts, p = g.holders.partner.sides[side].contracts;
     if (!o && !p) continue;
-    const who = [o ? `${nameOf('owner')}${o}` : '', p ? `${nameOf('partner')}${p}` : ''].filter(Boolean).join(' ');
+    const who = [o ? `${nameOf('owner')}${qty(o)}` : '', p ? `${nameOf('partner')}${qty(p)}` : ''].filter(Boolean).join(' ');
     parts.push(`${sideName(g.game, side)} ${who}`);
   }
   return parts.join('；');
@@ -265,7 +268,7 @@ function describe(e) {
     return { title: `转账 ${nameOf(from)} → ${nameOf(other(from))}`, sub: e.method || '' };
   }
   if (e.kind === 'fill') {
-    return { title: `${nameOf(e.holder)}${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张`, sub: `@${price(avgFillPrice(e))} · ${gameTitle(g)}` };
+    return { title: `${nameOf(e.holder)}${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${qty(e.contracts)}张`, sub: `@${price(avgFillPrice(e))} · ${gameTitle(g)}` };
   }
   if (e.kind === 'settle') return { title: `结算 ${sideName(g, e.winner)}`, sub: gameTitle(g) };
   const t = S.eventById.get(e.voids);
@@ -295,8 +298,56 @@ function eventRow(e) {
     amount = `<span class="amt num ${tone(eff.partnerDelta)}">${signed(eff.partnerDelta)}</span>`;
   }
   return `<button type="button" class="li" data-act="event" data-id="${e.id}">${icon}
-    <div class="li-main"><b class="${voided ? 'strike' : ''}">${esc(d.title)}</b><span class="sub">#${e.id} · ${esc(dt(e.occurred_at))}${d.sub ? ' · ' + esc(d.sub) : ''}</span></div>
+    <div class="li-main"><b class="${voided ? 'strike' : ''}">${esc(d.title)}</b><span class="sub">#${e.id} · ${esc(dt(e.occurred_at))}${d.sub ? ' · ' + esc(d.sub) : ''}${e.kalshi_fill_id || (e.kind === 'settle' && e.note === 'Kalshi 自动结算') ? ' · Kalshi' : ''}</span></div>
     <div class="r">${amount}${statusTag(e)}</div></button>`;
+}
+
+// Kalshi 待分配：同一个订单、同一边、同一个方向的几笔成交合成一行
+function kalshiGroups(status = 'pending') {
+  const groups = new Map();
+  for (const k of S.data.kalshi || []) {
+    if (k.status !== status) continue;
+    const key = `${k.order_id || k.id}|${k.side}|${k.action}`;
+    if (!groups.has(key)) {
+      groups.set(key, { key, ids: [], team_a: k.team_a, team_b: k.team_b, side: k.side, action: k.action, units: 0, notional: 0, fee: 0, at: k.occurred_at });
+    }
+    const g = groups.get(key);
+    g.ids.push(k.id);
+    g.units += toUnits(k.contracts);
+    g.notional += k.notional_cents;
+    g.fee += k.fee_cents;
+    if (k.occurred_at < g.at) g.at = k.occurred_at;
+  }
+  return [...groups.values()].sort((a, b) => a.at.localeCompare(b.at));
+}
+
+function kalshiRow(g, { buttons = true, restore = false } = {}) {
+  const c = g.units / 100;
+  const amount = g.action === 'buy' ? -(g.notional + g.fee) : g.notional - g.fee;
+  const ids = esc(g.ids.join(','));
+  const team = g.side === 'a' ? g.team_a : g.team_b;
+  let btns = '';
+  if (buttons && isOwner()) {
+    btns = restore
+      ? `<div class="kx-btns"><button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="0">恢复到待分配</button></div>`
+      : `<div class="kx-btns">
+          <button type="button" class="kx-b me" data-act="kx-assign" data-ids="${ids}" data-holder="owner">我的</button>
+          <button type="button" class="kx-b fr" data-act="kx-assign" data-ids="${ids}" data-holder="partner">${esc(fullName('partner'))}的</button>
+          <button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="1">忽略</button></div>`;
+  }
+  return `<div class="kx">
+    <div class="kx-h"><div class="li-main"><b>${g.action === 'buy' ? '买入' : '卖出'} ${esc(team)}赢 ${qty(c)}张 @${price(g.notional / c)}</b>
+      <span class="sub">${esc(g.team_a)} vs ${esc(g.team_b)} · ${dt(g.at)} · 手续费 ${money(g.fee)}${g.ids.length > 1 ? ` · ${g.ids.length} 笔成交` : ''}</span></div>
+      <span class="amt num">${signed(amount)}</span></div>${btns}</div>`;
+}
+
+function kalshiSection() {
+  const groups = kalshiGroups();
+  if (!groups.length) return '';
+  const ks = S.data.kalshiSync;
+  return `<div class="sec-t row">待分配 <span class="more">来自 Kalshi${ks?.last_run_at ? ' · ' + dt(ks.last_run_at) + ' 同步' : ''}</span></div>
+    <p class="sub">${isOwner() ? `点「我的」或「${esc(fullName('partner'))}的」，这笔就记进账本。和你们合买无关的点「忽略」。` : '持有人分配之后会出现在记录里。'}</p>
+    <div class="kx-list">${groups.map((g) => kalshiRow(g)).join('')}</div>`;
 }
 
 function viewHome() {
@@ -332,6 +383,7 @@ function viewHome() {
     ${chartSVG()}
     ${banners}
     ${isOwner() ? '<div class="btns"><a class="cta" href="#/fill">记一笔成交</a><a class="cta ghost" href="#/transfer">记转账</a></div>' : ''}
+    ${kalshiSection()}
     <div class="sec-t">进行中</div>
     ${open.length ? `<div class="list">${open.map(gameRow).join('')}</div>` : `<p class="empty">没有进行中的比赛。${isOwner() ? '点「记一笔成交」开始。' : ''}</p>`}
     <div class="sec-t row">最近记录 <a class="more" href="#/records">全部 ›</a></div>
@@ -351,7 +403,7 @@ function viewGames() {
 function posCard(g, h) {
   const x = g.holders[h];
   const sides = SIDES.filter((s) => x.sides[s].boughtContracts)
-    .map((s) => `${sideName(g.game, s)} ${x.sides[s].boughtContracts}张 · 均价 ${price(x.sides[s].avgPrice)}`).join('；');
+    .map((s) => `${sideName(g.game, s)} ${qty(x.sides[s].boughtContracts)}张 · 均价 ${price(x.sides[s].avgPrice)}`).join('；');
   let grid;
   if (x.open === 0) {
     const back = x.closedCost + x.realized;
@@ -360,8 +412,8 @@ function posCard(g, h) {
       <div><span class="sub">盈亏</span><b class="num ${tone(x.realized)}">${signed(x.realized)}</b><span class="sub num ${tone(x.realized)}">${pct(x.closedCost ? x.realized / x.closedCost : null)}</span></div>`;
   } else {
     const heldSides = SIDES.filter((s) => x.sides[s].contracts);
-    const ifWin = heldSides.length === 1 ? `${money(x.sides[heldSides[0]].contracts * 100)}` : '—';
-    grid = `<div><span class="sub">持有</span><b class="num">${x.open}张</b></div>
+    const ifWin = heldSides.length === 1 ? `${money(x.sides[heldSides[0]].units)}` : '—';
+    grid = `<div><span class="sub">持有</span><b class="num">${qty(x.open)}张</b></div>
       <div><span class="sub">持仓成本</span><b class="num">${money(x.openBasis)}</b></div>
       <div><span class="sub">${x.realized ? '已卖出盈亏' : '赢了回款'}</span><b class="num ${x.realized ? tone(x.realized) : 'up'}">${x.realized ? signed(x.realized) : ifWin}</b></div>`;
   }
@@ -390,7 +442,7 @@ function viewGame() {
       <div class="sec-t">比赛结果</div>
       <div class="yn"><button type="button" class="yn-b yes" data-act="settle" data-game="${esc(g.id)}" data-side="a">${esc(sideName(G, 'a'))}</button>
         <button type="button" class="yn-b no" data-act="settle" data-game="${esc(g.id)}" data-side="b">${esc(sideName(G, 'b'))}</button></div>
-      <span class="sub center">点结果，这场 ${openCount} 张单一起结算</span>
+      <span class="sub center">点结果，这场 ${qty(openCount)} 张单一起结算</span>
       <div class="btns"><a class="cta ghost" href="#/fill?game=${encodeURIComponent(g.id)}">再记一笔</a><a class="cta ghost" href="#/fill?game=${encodeURIComponent(g.id)}&action=sell">提前卖出</a></div>` : ''}
     <div class="sec-t">这场的记录</div>
     ${evs.length ? `<div class="list">${evs.map(eventRow).join('')}</div>` : '<p class="empty">没有记录。</p>'}`;
@@ -467,11 +519,12 @@ function readFill(f) {
   out.mode = v.mode === 'amount' ? 'amount' : 'price';
   out.hasFee = v.has_fee === 'on';
   const feeBlank = String(v.fee || '').trim() === '';
-  let amount = NaN, maxPayoutBad = false;
+  let amount = NaN;
   if (out.mode === 'price') {
-    out.contracts = parseCount(v.contracts);
-    out.price = parseCount(v.price);
-    out.notional = out.contracts * out.price;
+    out.contracts = parseQty(v.contracts);
+    out.price = parseQty(v.price);
+    if (!Number.isInteger(out.price)) out.price = NaN;
+    out.notional = Math.round(out.contracts * out.price);
     out.feeEstimate = estimateFee(out.contracts, out.price);
     out.fee = feeBlank ? out.feeEstimate : parseMoney(v.fee);
     out.feeIsEstimate = feeBlank;
@@ -480,10 +533,9 @@ function readFill(f) {
     amount = parseMoney(v.cost);
     if (out.action === 'buy') {
       const mp = parseMoney(v.maxpayout);
-      maxPayoutBad = mp > 0 && mp % 100 !== 0;
-      out.contracts = mp > 0 && !maxPayoutBad ? mp / 100 : NaN;
+      out.contracts = mp > 0 ? mp / 100 : NaN; // 每张赔付 $1，Max payout $34.91 就是 34.91 张
     } else {
-      out.contracts = parseCount(v.contracts);
+      out.contracts = parseQty(v.contracts);
     }
     out.feeEstimate = 0;
     out.feeIsEstimate = false;
@@ -494,6 +546,7 @@ function readFill(f) {
   }
   out.at = v.at ? new Date(v.at) : null;
   out.held = st && out.holder && out.side ? st.holders[out.holder].sides[out.side].contracts : 0;
+  out.heldUnits = st && out.holder && out.side ? st.holders[out.holder].sides[out.side].units : 0;
   const errs = [];
   if (v.game === 'new') {
     if (!out.teamA || !out.teamB) errs.push('填上两支球队');
@@ -501,9 +554,8 @@ function readFill(f) {
   }
   if (out.action === 'sell' && v.game === 'new') errs.push('卖出要选一场已有的比赛');
   if (out.mode === 'amount' && out.action === 'buy') {
-    if (maxPayoutBad) errs.push('Max payout 应该是整数美元（每张赔付 $1）');
-    else if (!(out.contracts > 0)) errs.push('填上 Max payout');
-  } else if (!(out.contracts > 0)) errs.push('张数要是正整数');
+    if (!(out.contracts > 0)) errs.push('填上 Max payout');
+  } else if (!(out.contracts > 0)) errs.push('张数要是正数，最多两位小数，比如 30 或 34.91');
   if (out.contracts > 1000000) errs.push('张数太大了');
   if (out.mode === 'price') {
     if (!(out.price >= 1 && out.price <= 99)) errs.push('成交价是 1 到 99 之间的整数（单位：美分）');
@@ -512,14 +564,14 @@ function readFill(f) {
     if (Number.isNaN(amount)) errs.push(out.action === 'buy' ? '填上 Cost，比如 18.30' : '填上卖出金额，比如 21.00');
     if (feeBlank) errs.push('填上 Fee（Kalshi 上显示的手续费）');
     else if (Number.isNaN(out.fee) || out.fee < 0) errs.push('Fee 格式不对，比如 0.50');
-    if (out.contracts > 0 && out.notional > 0 && !(out.notional >= out.contracts && out.notional <= out.contracts * 99)) {
+    if (out.contracts > 0 && out.notional > 0 && !(out.price > 0 && out.price < 100)) {
       errs.push(`算出来均价是 ${price(out.price)}，不在 1¢–99¢ 之间，检查一下数字`);
     } else if (out.contracts > 0 && !Number.isNaN(out.notional) && out.notional <= 0) {
       errs.push('Cost 要大于 Fee');
     }
   }
   if (!out.at || Number.isNaN(out.at.getTime())) errs.push('填一下成交时间');
-  if (out.action === 'sell' && out.contracts > out.held) errs.push(`${nameOf(out.holder)}在这边只持有 ${out.held} 张`);
+  if (out.action === 'sell' && toUnits(out.contracts) > out.heldUnits) errs.push(`${nameOf(out.holder)}在这边只持有 ${qty(out.held)} 张`);
   out.errors = errs;
   return out;
 }
@@ -546,14 +598,14 @@ function updateFill(f) {
   const sum = f.querySelector('#f-summary');
   const c = v.contracts, p = v.price;
   if (!(c > 0) || !(p >= 1 && p <= 99) || Number.isNaN(v.fee) || Number.isNaN(v.notional)) {
-    sum.innerHTML = v.action === 'sell' && v.st ? `<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${v.held}张</b></div>` : '';
+    sum.innerHTML = v.action === 'sell' && v.st ? `<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${qty(v.held)}张</b></div>` : '';
     return;
   }
   const feeTxt = v.feeIsEstimate ? `（手续费按估算 ${money(v.fee)}）` : '';
-  const derived = amountMode ? `<div class="kv"><span class="sub">折算</span><b class="num">${c}张 · 均价 ${price(p)}</b></div>` : '';
+  const derived = amountMode ? `<div class="kv"><span class="sub">折算</span><b class="num">${qty(c)}张 · 均价 ${price(p)}</b></div>` : '';
   if (v.action === 'buy') {
     const cost = v.notional + v.fee;
-    const win = c * 100;
+    const win = toUnits(c);
     let note = '';
     if (v.holder === 'partner' && v.st) {
       const o = v.st.holders.owner.sides[v.side];
@@ -569,8 +621,8 @@ function updateFill(f) {
   } else {
     const proceeds = v.notional - v.fee;
     const pos = v.st ? v.st.holders[v.holder].sides[v.side] : null;
-    const basisOut = pos && pos.contracts ? Math.round((pos.basis * Math.min(c, pos.contracts)) / pos.contracts) : 0;
-    sum.innerHTML = `${derived}<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${v.held}张</b></div>
+    const basisOut = pos && pos.units ? Math.round((pos.basis * Math.min(toUnits(c), pos.units)) / pos.units) : 0;
+    sum.innerHTML = `${derived}<div class="kv"><span class="sub">${esc(nameOf(v.holder))}在这边持有</span><b class="num">${qty(v.held)}张</b></div>
       <div class="tk sum"><span class="sub">卖出回款 ${esc(feeTxt)}</span><b class="num">${money(proceeds)}</b></div>
       <div class="tk sum"><span class="sub">这几张的盈亏（按平均成本）</span><b class="num ${tone(proceeds - basisOut)}">${signed(proceeds - basisOut)}</b></div>`;
   }
@@ -670,7 +722,7 @@ function openEvent(id) {
   const rows = [['时间', full(e.occurred_at)]];
   if (e.kind === 'fill') {
     rows.push(['比赛', gameTitle(g)], ['方向', `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)}`],
-      ['张数 · 均价', `${e.contracts} 张 · ${price(avgFillPrice(e))}`], ['成交额', money(notional(e))], ['手续费', money(e.fee_cents)],
+      ['张数 · 均价', `${qty(e.contracts)} 张 · ${price(avgFillPrice(e))}`], ['成交额', money(notional(e))], ['手续费', money(e.fee_cents)],
       [e.action === 'buy' ? '成本' : '回款', money(fillAmount(e))]);
   }
   if (e.kind === 'transfer') rows.push(['金额', money(e.amount_cents)], ['方式', e.method || '—']);
@@ -762,9 +814,47 @@ function viewSettings() {
     </div>
     ${isOwner() ? `<div class="kv"><span class="sub">邀请码${L().partner_id ? '（已加入）' : ''}</span><button type="button" class="pill" data-act="copy" data-text="${esc(L().invite_code)}">${esc(L().invite_code)} · 复制</button></div>` : ''}
     ${store.demo ? `<div class="sec-t">示例模式</div><div class="seg"><button type="button" class="${store.demoRole === 'owner' ? 'on' : ''}" data-act="demo-role" data-role="owner">持有人视角</button><button type="button" class="${store.demoRole === 'partner' ? 'on' : ''}" data-act="demo-role" data-role="partner">朋友视角</button></div>` : ''}
+    ${kalshiSettings()}
     <div class="sec-t">帮助</div>
     <a class="li" href="https://github.com/jingweiwan/kalshi-ledger#readme" target="_blank" rel="noopener"><div class="li-main"><b>使用说明</b><span class="sub">记账规则、怎么对账</span></div><span class="chev">›</span></a>
     ${store.demo ? '' : `<p class="sub">登录邮箱：${esc(S.user?.email || '')}</p><button type="button" class="cta ghost" data-act="signout">退出登录</button>`}`;
+}
+
+function kalshiSettings() {
+  const ks = S.data.kalshiSync;
+  const ignored = kalshiGroups('ignored');
+  const today = localInput().slice(0, 10);
+  const status = ks
+    ? `<div class="kv"><span class="sub">状态</span><b>${ks.last_run_at ? `${dt(ks.last_run_at)} 同步，新导入 ${ks.last_imported ?? 0} 条` : '已设置，还没同步过'}</b></div>
+       <div class="kv"><span class="sub">从这天的成交开始导入</span><b class="num">${esc(ks.since)}</b></div>`
+    : '<p class="sub">每小时自动把 Kalshi 上 NBA 比赛输赢的成交拉进「待分配」，你只需要点「我的」或「朋友的」。比赛出结果后自动结算。</p>';
+  const token = S.kxToken ? `<div class="token-box">
+      <b>同步令牌（只显示这一次，关掉就看不到了）</b>
+      <code class="tok">${esc(S.kxToken)}</code>
+      <button type="button" class="pill" data-act="copy" data-text="${esc(S.kxToken)}">复制令牌</button>
+      <ol class="steps">
+        <li>打开 <a href="${REPO_URL}/settings/secrets/actions" target="_blank" rel="noopener">GitHub 仓库的 Secrets 设置</a>，点 <b>New repository secret</b>。</li>
+        <li>Name 填 <code>KL_SYNC_TOKEN</code>，Secret 粘贴上面的令牌，保存。</li>
+        <li>同样再加两个：<code>KALSHI_KEY_ID</code> 填 Kalshi 的 Key ID，<code>KALSHI_PRIVATE_KEY</code> 填私钥整段（只读权限就够）。</li>
+        <li>打开 <a href="${REPO_URL}/actions/workflows/kalshi-sync.yml" target="_blank" rel="noopener">Kalshi 同步</a>，点 <b>Run workflow</b> 先跑一次。以后每小时自动跑。</li>
+      </ol></div>` : '';
+  return `<div class="sec-t">Kalshi 自动同步</div>
+    ${status}
+    ${isOwner() ? `<form data-form="kx-token" class="form" novalidate>
+      <label class="field"><span>从哪天的成交开始导入</span><input class="in" type="date" name="since" id="kx-since" value="${esc(ks?.since || today)}" max="${today}"></label>
+      <p class="err" id="kx-err" hidden></p>
+      <button class="cta ${ks ? 'ghost' : ''}" type="submit">${ks ? '重新生成同步令牌（旧的作废）' : '生成同步令牌'}</button>
+    </form>` : ''}
+    ${token}
+    ${ignored.length ? `<div class="sec-t">已忽略的 Kalshi 成交</div><div class="kx-list">${ignored.map((g) => kalshiRow(g, { restore: true })).join('')}</div>` : ''}`;
+}
+
+async function newSyncToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = 'kl_' + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return { token, hash };
 }
 
 // ───────────── 点击 ─────────────
@@ -787,10 +877,10 @@ const ACTIONS = {
     const g = S.r.games.find((x) => x.id === el.dataset.game);
     const winner = el.dataset.side;
     const n = g.holders.owner.open + g.holders.partner.open;
-    const pPay = g.holders.partner.sides[winner].contracts * 100;
+    const pPay = g.holders.partner.sides[winner].units;
     const ok = await ask({
       title: `结果是${sideName(g.game, winner)}？`,
-      body: `这场 ${n} 张单一起结算，结算后不能再记这场的成交。${g.holders.partner.bought ? `${esc(fullName('partner'))}拿回 ${money(pPay)}。` : ''}点错了可以在记录里撤销。`,
+      body: `这场 ${qty(n)} 张单一起结算，结算后不能再记这场的成交。${g.holders.partner.bought ? `${esc(fullName('partner'))}拿回 ${money(pPay)}。` : ''}点错了可以在记录里撤销。`,
       ok: '确认结算',
     });
     if (!ok) return;
@@ -847,6 +937,25 @@ const ACTIONS = {
     await reload(); render(); toast('已确认');
   },
   'demo-role'(el) { S.store.setDemoRole(el.dataset.role); },
+  async 'kx-assign'(el) {
+    const ids = el.dataset.ids.split(',');
+    const holder = el.dataset.holder;
+    for (const b of el.closest('.kx').querySelectorAll('button')) b.disabled = true;
+    for (const id of ids) await S.store.assignKalshi(S.ledger.id, id, holder);
+    await reload(); render();
+    toast(holder === 'partner' ? `已记给${fullName('partner')}` : '已记给我');
+  },
+  async 'kx-ignore'(el) {
+    const ids = el.dataset.ids.split(',');
+    const ignore = el.dataset.ignore === '1';
+    if (ignore) {
+      const ok = await ask({ title: '忽略这笔？', body: '不记进账本。比如和你们合买无关的单。以后可以在设置里恢复。', ok: '忽略' });
+      if (!ok) return;
+    }
+    for (const id of ids) await S.store.ignoreKalshi(S.ledger.id, id, ignore);
+    await reload(); render();
+    toast(ignore ? '已忽略' : '已放回待分配');
+  },
 };
 
 document.addEventListener('click', async (ev) => {
@@ -867,6 +976,19 @@ function showErr(f, id, msg) {
 }
 
 const FORMS = {
+  async 'kx-token'(f) {
+    const since = new FormData(f).get('since');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(since || '')) return showErr(f, 'kx-err', '选一个开始日期');
+    if (S.data.kalshiSync) {
+      const ok = await ask({ title: '重新生成同步令牌？', body: '旧令牌马上作废，要把 GitHub 里的 KL_SYNC_TOKEN 换成新的。', ok: '重新生成' });
+      if (!ok) return;
+    }
+    const { token, hash } = await newSyncToken();
+    await S.store.setKalshiSync(S.ledger.id, hash, since);
+    S.kxToken = token;
+    await reload(); render();
+    toast('令牌生成好了，复制到 GitHub');
+  },
   async auth(f) {
     const { email, password } = Object.fromEntries(new FormData(f));
     if (!email || !password) return showErr(f, 'auth-err', '填上邮箱和密码');

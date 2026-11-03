@@ -52,6 +52,16 @@ export function parseMoney(s) {
   if (!/^\d+(\.\d{0,2})?$/.test(t)) return NaN;
   return Math.round(parseFloat(t) * 100);
 }
+/** 张数显示：30 / 34.91 / 2.5 */
+export function qty(n) {
+  const v = Math.round(Number(n) * 100) / 100;
+  return String(v);
+}
+/** 张数输入：正数，最多两位小数；不合法返回 NaN */
+export function parseQty(s) {
+  const t = String(s ?? '').trim();
+  return /^\d+(\.\d{1,2})?$/.test(t) && Number(t) > 0 ? Number(t) : NaN;
+}
 /** 只接受正整数字符串 */
 export function parseCount(s) {
   const t = String(s ?? '').trim();

@@ -1,5 +1,5 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
-import { money, signed, price, dt, full, day } from './format.js';
+import { money, signed, price, dt, full, day, qty } from './format.js';
 import { avgFillPrice } from './ledger.js';
 
 const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
@@ -15,7 +15,7 @@ function describe(e, gameById) {
   }
   if (e.kind === 'fill') {
     return {
-      label: `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${e.contracts}张 @${price(avgFillPrice(e))}`,
+      label: `${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${qty(e.contracts)}张 @${price(avgFillPrice(e))}`,
       sub: `${title(g)} · ${dt(e.occurred_at)}`,
     };
   }
@@ -40,7 +40,7 @@ export function statementModel(st, games, createdAt = new Date().toISOString()) 
   });
   const positions = st.openPositions.map((p) => ({
     label: `${sideName(p.game, p.side)} · ${title(p.game)}`,
-    sub: `${p.contracts}张 · 成本 ${money(p.basis)}`,
+    sub: `${qty(p.contracts)}张 · 成本 ${money(p.basis)}`,
   }));
   const summary = [
     { label: st.transfersNet >= 0 ? '你转给我（净）' : '我转给你（净）', value: money(Math.abs(st.transfersNet)) },

@@ -72,6 +72,30 @@
 - 打开就能看到余额、自己的单和所有记录。
 - 有新记录时首页会提示，看过没问题点「全部确认」。
 
+## Kalshi 自动同步
+
+每小时自动把 Kalshi 账户里 **NBA 比赛输赢**（`KXNBAGAME`）的成交拉进首页的「待分配」。你点「我的」或「朋友的」就记进账本，张数、价格、手续费都是 Kalshi 的原始数据。同一个订单分几次成交的会合成一行。比赛出结果、这场的成交都分配完之后，账本自动结算。
+
+- 只导入 NBA 比赛输赢；球员数据、让分、别的市场一律跳过。和合买无关的单点「忽略」，在设置里可以恢复。
+- 张数支持两位小数（Kalshi 按金额下单会成交 34.91 张这种）。手续费 Kalshi 精确到 0.0001 美元，账本每笔四舍五入到分。
+- 分错了：在记录里撤销那一条，它会回到待分配，重新分就行。
+
+**设置一次就好：**
+
+1. Supabase 的 SQL Editor 里把最新的 [`supabase/schema.sql`](supabase/schema.sql) 再运行一次。
+2. 账本「设置 → Kalshi 自动同步」，选从哪天开始导入，点「生成同步令牌」，复制。
+3. GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret**，加三个：
+
+   | Name | Secret |
+   | --- | --- |
+   | `KALSHI_KEY_ID` | Kalshi API key 的 Key ID |
+   | `KALSHI_PRIVATE_KEY` | Kalshi 私钥整段，包括 `-----BEGIN PRIVATE KEY-----` 和 `-----END PRIVATE KEY-----` 两行（只读权限就够） |
+   | `KL_SYNC_TOKEN` | 第 2 步复制的同步令牌 |
+
+4. 仓库 **Actions → Kalshi 同步 → Run workflow** 先手动跑一次，以后每小时自动跑。
+
+同步程序（[`sync/kalshi-sync.mjs`](sync/kalshi-sync.mjs)）只拿着同步令牌，只能往账本里加「待分配」和比赛结果，别的数据碰不到。运行日志是公开的，只打印条数。
+
 ## 对账单（发微信）
 
 朋友在国内、网页打不开或者很慢的时候用。首页右上角「对账单」：
@@ -96,6 +120,7 @@
 | `js/app.js` | 页面 |
 | `js/store.js` | 读写 Supabase；没配置时用示例数据 |
 | `js/statement-image.js` | 对账单图片和文字 |
+| `sync/` | Kalshi 同步：拉成交、换算成账本记录、查比赛结果 |
 | `proxy/worker.js` | Cloudflare 转发：`/sb/...` 转给 Supabase，其他转给 GitHub Pages |
 | `supabase/schema.sql` | 数据库表、权限（只有持有人能记账，记录不能改不能删）、确认和对账单函数 |
 | `tests/` | 计算测试、转发测试、数据库权限测试 |

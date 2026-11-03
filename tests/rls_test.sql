@@ -59,12 +59,16 @@ select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, gam
 insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents)
   values (:'ledger_id', 'fill', :'g1', 'owner', 'buy', 'a', 30, 1840, 50);
 \echo PASS 按金额记的成交（均价 61.3¢）可以保存
-select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 30, 3000, 0)', :'ledger_id', :'g1'), '均价 100¢');
+select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 30, 3001, 0)', :'ledger_id', :'g1'), '均价超过每张 $1');
+-- 小数张
+insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, notional_cents, fee_cents)
+  values (:'ledger_id', 'fill', :'g1', 'owner', 'buy', 'a', 34.91, 2967, 31);
+\echo PASS 小数张（34.91 张）可以保存
 select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, fee_cents) values (%L, ''fill'', %L, ''owner'', ''buy'', ''a'', 30, 0)', :'ledger_id', :'g1'), '没有单价也没有成交额');
 
 -- 朋友只能看，不能记
 select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
-do $$ begin if (select count(*) from public.events) <> 4 then raise exception 'FAIL: 朋友看到的记录数不对'; end if; raise notice 'PASS 朋友能看到 4 条记录'; end $$;
+do $$ begin if (select count(*) from public.events) <> 5 then raise exception 'FAIL: 朋友看到的记录数不对'; end if; raise notice 'PASS 朋友能看到 5 条记录'; end $$;
 select pg_temp.must_fail(format('insert into public.events (ledger_id, kind, direction, amount_cents) values (%L, ''transfer'', ''to_partner'', 100)', :'ledger_id'), '朋友记账');
 select pg_temp.must_fail(format('insert into public.games (ledger_id, team_a, team_b) values (%L, ''a'', ''b'')', :'ledger_id'), '朋友建比赛');
 select pg_temp.must_fail(format('update public.events set confirmed_at = now() where ledger_id = %L', :'ledger_id'), '朋友直接改确认字段');
@@ -109,4 +113,74 @@ reset role; set role anon;
 select pg_temp.must_fail('select * from public.events', '未登录读记录');
 select pg_temp.must_fail('select public.create_ledger(''x'')', '未登录建账本');
 reset role;
+-- ───────── Kalshi 同步 ─────────
+grant execute on function pg_temp.must_fail(text, text) to anon;
+set role authenticated;
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select public.set_kalshi_sync(:'ledger_id', encode(sha256(convert_to('tok-123', 'UTF8')), 'hex'), '2026-11-01');
+\echo PASS 持有人设置同步令牌
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select pg_temp.must_fail(format('select public.set_kalshi_sync(%L, %L, ''2026-11-01'')', :'ledger_id', repeat('a', 64)), '朋友设置同步令牌');
+select pg_temp.must_fail('select token_hash from public.kalshi_sync', '登录用户读令牌哈希');
+
+reset role; set role anon;
+select pg_temp.must_fail('select public.kalshi_sync_info(''wrong'')', '错误令牌读同步信息');
+select pg_temp.must_fail('select * from public.kalshi_fills', '没登录读 Kalshi 成交');
+select pg_temp.must_fail('select public.assign_kalshi_fill(gen_random_uuid(), ''x'', ''owner'')', '没登录分配');
+do $$ begin
+  if (public.kalshi_sync_info('tok-123')->>'since') <> '2026-11-01' then raise exception 'FAIL: since 不对'; end if;
+  raise notice 'PASS 同步程序用令牌拿到起始日期';
+end $$;
+select public.kalshi_ingest('tok-123', '[
+  {"id":"K1","event_ticker":"KXNBAGAME-26NOV02PHXGSW","market_ticker":"KXNBAGAME-26NOV02PHXGSW-GSW","team_a":"太阳","team_b":"勇士","starts_at":"2026-11-03T03:00:00Z","side":"b","action":"buy","contracts":34.91,"price_cents":85,"notional_cents":2967,"fee_cents":31,"fee_dollars":"0.311600","occurred_at":"2026-11-03T02:47:09Z"},
+  {"id":"K2","event_ticker":"KXNBAGAME-26NOV02PHXGSW","market_ticker":"KXNBAGAME-26NOV02PHXGSW-GSW","team_a":"太阳","team_b":"勇士","starts_at":"2026-11-03T03:00:00Z","side":"b","action":"buy","contracts":10,"price_cents":80,"notional_cents":800,"fee_cents":12,"fee_dollars":"0.112000","occurred_at":"2026-11-03T02:50:00Z"}
+]'::jsonb, '[]'::jsonb, 'test') ->> 'imported' as imported \gset
+do $$ begin if current_setting('vars.dummy', true) is null then null; end if; end $$;
+\echo 导入条数 :imported
+select (public.kalshi_ingest('tok-123', '[{"id":"K1","event_ticker":"KXNBAGAME-26NOV02PHXGSW","market_ticker":"x","team_a":"太阳","team_b":"勇士","side":"b","action":"buy","contracts":34.91,"notional_cents":2967,"fee_cents":31,"occurred_at":"2026-11-03T02:47:09Z"}]'::jsonb, '[]'::jsonb) ->> 'imported') as reimported \gset
+\echo 重复导入条数 :reimported
+select pg_temp.must_fail('select public.kalshi_ingest(''wrong'', ''[]''::jsonb, ''[]''::jsonb)', '错误令牌写入');
+
+reset role; set role authenticated;
+select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
+do $$ begin if (select count(*) from public.kalshi_fills) <> 0 then raise exception 'FAIL: 陌生人看到了 Kalshi 成交'; end if; raise notice 'PASS 陌生人看不到 Kalshi 成交'; end $$;
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+do $$ begin if (select count(*) from public.kalshi_fills) <> 2 then raise exception 'FAIL: 朋友应该能看到 2 笔待分配'; end if; raise notice 'PASS 朋友能看到待分配的 Kalshi 成交'; end $$;
+select pg_temp.must_fail(format('select public.assign_kalshi_fill(%L, ''K1'', ''partner'')', :'ledger_id'), '朋友自己分配');
+
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select id as k1_event from public.assign_kalshi_fill(:'ledger_id', 'K1', 'partner') \gset
+do $$ begin
+  if not exists (select 1 from public.games where kalshi_event_ticker = 'KXNBAGAME-26NOV02PHXGSW' and team_a = '太阳' and team_b = '勇士') then raise exception 'FAIL: 没有自动建比赛'; end if;
+  if not exists (select 1 from public.events where kalshi_fill_id = 'K1' and holder = 'partner' and contracts = 34.91 and notional_cents = 2967 and fee_cents = 31) then raise exception 'FAIL: 分配后的记录不对'; end if;
+  if (select status from public.kalshi_fills where id = 'K1') <> 'assigned' then raise exception 'FAIL: 状态没变'; end if;
+  raise notice 'PASS 分配给朋友：自动建比赛、生成成交记录';
+end $$;
+select pg_temp.must_fail(format('select public.assign_kalshi_fill(%L, ''K1'', ''owner'')', :'ledger_id'), '重复分配');
+select pg_temp.must_fail(format('select public.ignore_kalshi_fill(%L, ''K1'', true)', :'ledger_id'), '忽略已分配的');
+-- 分错了：撤销后可以重新分
+insert into public.events (ledger_id, kind, voids, note) values (:'ledger_id', 'void', :k1_event, '分错人了');
+select id as k1_event2 from public.assign_kalshi_fill(:'ledger_id', 'K1', 'owner') \gset
+\echo PASS 撤销后重新分配
+-- 出结果，但 K2 还没分配：不结算
+reset role; set role anon;
+select (public.kalshi_ingest('tok-123', '[]'::jsonb, '[{"event_ticker":"KXNBAGAME-26NOV02PHXGSW","winner":"b","decided_at":"2026-11-03T05:55:27Z"}]'::jsonb) ->> 'settled') as settled1 \gset
+\echo 还有待分配时结算场数 :settled1
+reset role; set role authenticated;
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select public.ignore_kalshi_fill(:'ledger_id', 'K2', true);
+do $$ begin
+  if not exists (select 1 from public.events e join public.games g on g.id = e.game_id
+                 where e.kind = 'settle' and e.winner = 'b' and g.kalshi_event_ticker = 'KXNBAGAME-26NOV02PHXGSW' and e.note = 'Kalshi 自动结算') then
+    raise exception 'FAIL: 剩下的忽略后应该自动结算';
+  end if;
+  raise notice 'PASS 最后一笔处理完后自动结算';
+end $$;
+select public.ignore_kalshi_fill(:'ledger_id', 'K2', false);
+select pg_temp.must_fail(format('select public.assign_kalshi_fill(%L, ''K2'', ''owner'')', :'ledger_id'), '比赛结算后再分配（要先撤销结算）');
+reset role;
+do $$ begin
+  if (select last_imported from public.kalshi_sync) is null then raise exception 'FAIL: 没记录同步时间'; end if;
+  raise notice 'PASS 记录了上次同步';
+end $$;
 \echo ALL RLS TESTS PASSED

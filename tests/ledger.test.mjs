@@ -173,3 +173,24 @@ test('按金额记的买入和卖出，余额、持仓、滑点都按成交额�
   const slip = s.slips.find((x) => x.gameId === 'g3');
   assert.equal(slip.diff.toFixed(2), (3670 / 60 - 58).toFixed(2));
 });
+
+test('小数张：34.91 张按百分之一张算，赢了正好回 $34.91', () => {
+  const games = [{ id: 'g', team_a: '太阳', team_b: '勇士' }];
+  const evs = [
+    { id: 1, kind: 'transfer', direction: 'to_owner', amount_cents: 5000, occurred_at: 't1' },
+    { id: 2, kind: 'fill', game_id: 'g', holder: 'partner', action: 'buy', side: 'b', contracts: 34.91, price_cents: 85, notional_cents: 2967, fee_cents: 31, occurred_at: 't2' },
+    { id: 3, kind: 'fill', game_id: 'g', holder: 'partner', action: 'sell', side: 'b', contracts: 10.5, price_cents: 90, notional_cents: 945, fee_cents: 4, occurred_at: 't3' },
+    { id: 4, kind: 'settle', game_id: 'g', winner: 'b', occurred_at: 't4' },
+  ];
+  const r = compute(evs, games);
+  const g = r.games[0];
+  assert.equal(r.effects.get(2).partnerDelta, -2998);
+  assert.equal(r.effects.get(3).partnerDelta, 941);
+  // 剩 24.41 张，赢了回 $24.41
+  assert.equal(r.effects.get(4).partnerDelta, 2441);
+  assert.equal(g.holders.partner.sides.b.boughtContracts, 34.91);
+  assert.equal(g.holders.partner.open, 0);
+  assert.equal(r.balance, 5000 - 2998 + 941 + 2441);
+  assert.equal(r.transfersIn - r.transfersOut + r.realized.partner - r.openBasis.partner, r.balance);
+  assert.equal(estimateFee(34.91, 85), Math.ceil(7 * 3491 * 85 * 15 / 1000000));
+});

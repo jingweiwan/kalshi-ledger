@@ -75,12 +75,17 @@ function supabaseStore() {
       return unwrap(await sb.rpc('join_ledger', { p_code: code, p_partner_name: partnerName }));
     },
     async load(ledgerId) {
-      const [games, events, statements] = await Promise.all([
+      const [games, events, statements, kalshi, kalshiSync] = await Promise.all([
         pageAll(() => sb.from('games').select('*').eq('ledger_id', ledgerId).order('created_at')),
         pageAll(() => sb.from('events').select('*').eq('ledger_id', ledgerId).order('id')),
         pageAll(() => sb.from('statements').select('*').eq('ledger_id', ledgerId).order('no')),
+        // 还没运行新版 schema.sql 时这张表不存在，就当没有
+        pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch(() => []),
+        sb.rpc('kalshi_sync_status', { p_ledger: ledgerId }).then((r) => (r.error ? null : r.data)),
       ]);
-      return { games, events, statements };
+      for (const e of events) if (e.contracts != null) e.contracts = Number(e.contracts);
+      for (const k of kalshi) k.contracts = Number(k.contracts);
+      return { games, events, statements, kalshi, kalshiSync };
     },
     async addGame(row) {
       return unwrap(await sb.from('games').insert(row).select().single());
@@ -96,6 +101,15 @@ function supabaseStore() {
     },
     async confirmStatement(id) {
       return unwrap(await sb.rpc('confirm_statement', { p_statement: id }));
+    },
+    async assignKalshi(ledgerId, id, holder) {
+      return unwrap(await sb.rpc('assign_kalshi_fill', { p_ledger: ledgerId, p_id: id, p_holder: holder }));
+    },
+    async ignoreKalshi(ledgerId, id, ignore) {
+      return unwrap(await sb.rpc('ignore_kalshi_fill', { p_ledger: ledgerId, p_id: id, p_ignore: ignore }));
+    },
+    async setKalshiSync(ledgerId, tokenHash, since) {
+      return unwrap(await sb.rpc('set_kalshi_sync', { p_ledger: ledgerId, p_token_hash: tokenHash, p_since: since }));
     },
   };
 }
@@ -123,7 +137,7 @@ function demoStore(notConfigured) {
     async myLedger() { return clone(d.ledger); },
     async createLedger() { return clone(d.ledger); },
     async joinLedger() { return clone(d.ledger); },
-    async load() { return clone({ games: d.games, events: d.events, statements: d.statements }); },
+    async load() { return clone({ games: d.games, events: d.events, statements: d.statements, kalshi: d.kalshi.filter((k) => k.status !== 'assigned'), kalshiSync: d.kalshiSync }); },
     async addGame(row) {
       mustOwner();
       const g = { id: `g${nextGame++}`, league: 'NBA', starts_at: null, created_at: now(), ...row };
@@ -166,6 +180,28 @@ function demoStore(notConfigured) {
       nextStatement++;
       d.statements.push(s);
       return clone(s);
+    },
+    async assignKalshi(_ledgerId, id, holder) {
+      mustOwner();
+      const k = d.kalshi.find((x) => x.id === id);
+      if (!k || k.status === 'assigned') throw new Error('这笔已经分配过了');
+      let g = d.games.find((x) => x.kalshi_event_ticker === k.event_ticker);
+      if (!g) {
+        g = { id: `g${nextGame++}`, ledger_id: d.ledger.id, league: 'NBA', team_a: k.team_a, team_b: k.team_b, starts_at: k.starts_at, created_at: now(), kalshi_event_ticker: k.event_ticker };
+        d.games.push(g);
+      }
+      const e = await this.addEvent({ kind: 'fill', game_id: g.id, holder, action: k.action, side: k.side, contracts: k.contracts, price_cents: k.price_cents, notional_cents: k.notional_cents, fee_cents: k.fee_cents, occurred_at: k.occurred_at, kalshi_fill_id: k.id });
+      k.status = 'assigned';
+      return e;
+    },
+    async ignoreKalshi(_ledgerId, id, ignore) {
+      mustOwner();
+      const k = d.kalshi.find((x) => x.id === id);
+      k.status = ignore ? 'ignored' : 'pending';
+    },
+    async setKalshiSync(_ledgerId, _hash, since) {
+      mustOwner();
+      d.kalshiSync = { since, last_run_at: null, last_imported: null, last_message: null };
     },
     async confirmStatement(id) {
       const s = d.statements.find((x) => x.id === id);

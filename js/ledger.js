@@ -1,4 +1,6 @@
 // 记账核心：只做计算，不碰网络和页面。所有金额都是整数「分」。
+// 张数可以有两位小数（Kalshi 按金额下单会成交 34.91 张这种）；内部按「百分之一张」的整数来算，
+// 这样每 0.01 张赢了正好回 1 分钱，不会有浮点误差。
 //
 // 规则：
 // - 每笔成交记在一个人名下（owner = Kalshi 账户持有人，partner = 跟单的朋友）。
@@ -9,11 +11,14 @@
 export const HOLDERS = ['owner', 'partner'];
 export const SIDES = ['a', 'b'];
 
+/** 张数 → 百分之一张的整数 */
+export const toUnits = (contracts) => Math.round(Number(contracts) * 100);
+
 /** Kalshi 手续费估算：向上取整到分，0.07 × 张数 × P × (1 − P)。以成交记录里的实际手续费为准。 */
 export function estimateFee(contracts, priceCents) {
   const c = Number(contracts), p = Number(priceCents);
-  if (!Number.isInteger(c) || c <= 0 || !Number.isInteger(p) || p < 1 || p > 99) return 0;
-  return Math.ceil((7 * c * p * (100 - p)) / 10000);
+  if (!(c > 0) || Math.abs(toUnits(c) - c * 100) > 1e-6 || !Number.isInteger(p) || p < 1 || p > 99) return 0;
+  return Math.ceil((7 * toUnits(c) * p * (100 - p)) / 1000000 - 1e-9);
 }
 
 /** 这条记录需要朋友确认吗：除了持有人自己的成交，其他都要。 */
@@ -23,7 +28,7 @@ export function needsConfirm(e) {
 
 /** 成交额（不含手续费）。按金额记的直接存 notional_cents；按单价记的旧记录用 张数 × 单价。 */
 export function notional(e) {
-  return e.notional_cents ?? e.contracts * e.price_cents;
+  return e.notional_cents ?? Math.round(e.contracts * e.price_cents);
 }
 
 /** 这笔的平均成交价（分/张，可能带小数，比如分几档成交的 61.3¢） */
@@ -37,7 +42,7 @@ export function fillAmount(e) {
 }
 
 function newSide() {
-  return { contracts: 0, basis: 0, boughtContracts: 0, boughtNotional: 0, firstBuyAt: null };
+  return { units: 0, basis: 0, boughtUnits: 0, boughtNotional: 0, firstBuyAt: null };
 }
 function newHolder() {
   return { a: newSide(), b: newSide(), realized: 0, closedCost: 0, payout: 0, bought: false, buyCost: 0 };
@@ -100,23 +105,24 @@ export function compute(events, games = []) {
         cash = 0;
       } else if (e.action === 'buy') {
         const cost = fillAmount(e);
-        pos.contracts += e.contracts;
+        pos.units += toUnits(e.contracts);
         pos.basis += cost;
-        pos.boughtContracts += e.contracts;
+        pos.boughtUnits += toUnits(e.contracts);
         pos.boughtNotional += notional(e);
         if (!pos.firstBuyAt) pos.firstBuyAt = e.occurred_at;
         h.bought = true;
         h.buyCost += cost;
         cash = -cost;
       } else {
-        const n = Math.min(e.contracts, pos.contracts);
-        if (n < e.contracts) {
-          warning = `卖出 ${e.contracts} 张，但只持有 ${pos.contracts} 张`;
+        const want = toUnits(e.contracts);
+        const n = Math.min(want, pos.units);
+        if (n < want) {
+          warning = `卖出 ${want / 100} 张，但只持有 ${pos.units / 100} 张`;
           problems.push({ id: e.id, message: warning });
         }
-        const removed = pos.contracts > 0 ? Math.round((pos.basis * n) / pos.contracts) : 0;
+        const removed = pos.units > 0 ? Math.round((pos.basis * n) / pos.units) : 0;
         const proceeds = fillAmount(e);
-        pos.contracts -= n;
+        pos.units -= n;
         pos.basis -= removed;
         const pnl = proceeds - removed;
         h.realized += pnl;
@@ -139,10 +145,10 @@ export function compute(events, games = []) {
           let payout = 0, removed = 0, held = 0;
           for (const side of SIDES) {
             const pos = h[side];
-            held += pos.contracts;
-            if (side === e.winner) payout += pos.contracts * 100;
+            held += pos.units;
+            if (side === e.winner) payout += pos.units; // 每 0.01 张回 1 分
             removed += pos.basis;
-            pos.contracts = 0;
+            pos.units = 0;
             pos.basis = 0;
           }
           const pnl = payout - removed;
@@ -173,16 +179,17 @@ export function compute(events, games = []) {
       for (const side of SIDES) {
         const p = h[side];
         sides[side] = {
-          contracts: p.contracts,
+          units: p.units,
+          contracts: p.units / 100,
           basis: p.basis,
-          boughtContracts: p.boughtContracts,
-          avgPrice: p.boughtContracts ? p.boughtNotional / p.boughtContracts : null,
+          boughtContracts: p.boughtUnits / 100,
+          avgPrice: p.boughtUnits ? (p.boughtNotional * 100) / p.boughtUnits : null,
           firstBuyAt: p.firstBuyAt,
         };
       }
       holders[who] = {
         sides,
-        open: sides.a.contracts + sides.b.contracts,
+        open: (sides.a.units + sides.b.units) / 100,
         openBasis: sides.a.basis + sides.b.basis,
         realized: h.realized,
         closedCost: h.closedCost,

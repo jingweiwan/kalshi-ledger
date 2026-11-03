@@ -215,3 +215,19 @@ select.in { appearance: none; -webkit-appearance: none; background-image: linear
 .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 2px 0; }
 .tabbar a.on { color: var(--ink); }
 .tabbar svg { width: 23px; height: 23px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Kalshi 待分配 */
+.kx-list { display: flex; flex-direction: column; gap: 10px; }
+.kx { border: 1px solid var(--line); border-radius: 16px; padding: 11px 12px; display: flex; flex-direction: column; gap: 10px; }
+.kx-h { display: flex; gap: 10px; align-items: flex-start; }
+.kx-h .li-main .sub { white-space: normal; }
+.kx-btns { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+.kx-b { border-radius: 999px; padding: 9px 12px; font-weight: 800; font-size: 14px; text-align: center; }
+.kx-b.me { background: var(--ink); color: var(--bg); }
+.kx-b.fr { background: var(--friend); color: var(--on-friend); }
+.kx-b.ghost { background: var(--fill); color: var(--sub); }
+.token-box { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; background: var(--warn-soft); border-radius: 16px; padding: 14px; }
+.token-box .tok { display: block; width: 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; background: var(--bg); border-radius: 10px; padding: 10px; overflow-wrap: anywhere; user-select: all; }
+.steps { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.steps a { color: var(--up); font-weight: 700; text-decoration: underline; }
+.steps code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; background: var(--bg); padding: 1px 5px; border-radius: 5px; }
