@@ -17,14 +17,14 @@ const MESSAGES = [
   [/email not confirmed/i, '邮箱还没确认。去邮箱点确认链接，或者让持有人在 Supabase 里关掉「Confirm email」'],
   [/unable to validate email|invalid email/i, '邮箱格式不对'],
   [/rate limit|too many requests/i, '操作太频繁了，等一会儿再试'],
-  [/failed to fetch|networkerror|load failed/i, '连不上服务器，检查一下网络再试'],
+  [/failed to fetch|networkerror|load failed|fetch failed/i, '连不上 Supabase。用手机或电脑自带的浏览器打开这个网址，关掉广告拦截插件再试', true],
   [/jwt expired/i, '登录过期了，请重新登录'],
   [/could not find the (table|function)|schema cache|relation .* does not exist|PGRST20[2-5]/i, '数据库还没建好：到 Supabase 后台 SQL Editor 运行一次 supabase/schema.sql，再刷新这个页面'],
   [/invalid api key|no api key/i, 'Supabase 的 key 不对，检查 js/config.js'],
 ];
 function friendly(error) {
   const msg = error?.message || String(error);
-  for (const [re, text] of MESSAGES) if (re.test(msg)) return text;
+  for (const [re, text, showRaw] of MESSAGES) if (re.test(msg)) return showRaw ? `${text}（${msg}）` : text;
   return msg;
 }
 function unwrap({ data, error }) {
