@@ -27,7 +27,7 @@
 1. 在 https://supabase.com 注册，点 **New project**，名字填 `kalshi-ledger`。区域：朋友在国内就选 Tokyo 或 Singapore，否则选 West US。
 2. 左边 **SQL Editor → New query**，把 [`supabase/schema.sql`](supabase/schema.sql) 整段粘贴进去，点 **Run**。
 3. 左边 **Authentication → Sign In / Providers → Email**，关掉 **Confirm email**。这样注册时不用收确认邮件，QQ 邮箱经常收不到这类邮件。
-4. **Project Settings → API**：复制 **Project URL** 和 **anon public**（或 **publishable**）key，填进 [`js/config.js`](js/config.js)。
+4. 项目首页的 **Connect** 按钮里复制 **Project URL** 和 **anon public**（或 **publishable**）key，填进 [`js/config.js`](js/config.js)。
    这两个本来就是公开的；**service_role / secret key 不要填**。
 
 ### 2. GitHub Pages（网址）
