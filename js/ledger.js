@@ -249,26 +249,35 @@ export function stats(result) {
  * @param {Array} events 所有记录
  * @param {object|null} lastStatement 上一张对账单（statements 表的行）
  */
-export function statement(result, events, lastStatement) {
+export function statement(result, events, lastStatement, games = []) {
   const after = lastStatement ? lastStatement.upto_event_id : 0;
   const sorted = [...events].sort((x, y) => x.id - y.id);
+  const byId = new Map(sorted.map((x) => [x.id, x]));
   const uptoEventId = sorted.length ? sorted[sorted.length - 1].id : 0;
+  // 每条新记录的金额 = 算到这条为止的余额 − 算到上一条为止的余额。
+  // 这样撤销旧记录、撤销影响到后面的结算，都能如实反映，且「上次余额 + 各条 = 本次余额」一定成立。
+  const balanceUpTo = (k) => compute(sorted.filter((x) => x.id <= k), games).balance;
+  const related = (x) => {
+    if (!x) return false;
+    if (x.kind === 'transfer') return true;
+    if (x.kind === 'fill') return x.holder === 'partner';
+    if (x.kind === 'settle') return result.effects.get(x.id)?.involvesPartner ?? true;
+    return related(byId.get(x.voids));
+  };
   const items = [];
+  let prev = balanceUpTo(after);
   for (const e of sorted) {
     if (e.id <= after) continue;
-    if (e.kind === 'void') {
-      const target = sorted.find((x) => x.id === e.voids);
-      const eff = target && result.effects.get(target.id);
-      // 被撤销的记录如果在上一张对账单里、并且动过朋友的钱，要在新对账单里说明
-      if (target && target.id <= after && (target.kind !== 'fill' || target.holder === 'partner')) {
-        items.push({ event: e, target, delta: null });
-      }
-      continue;
-    }
-    if (result.voidOf.has(e.id)) continue;
-    const eff = result.effects.get(e.id);
-    if (!eff || !eff.involvesPartner) continue;
-    items.push({ event: e, delta: eff.partnerDelta });
+    const b = balanceUpTo(e.id);
+    const delta = b - prev;
+    prev = b;
+    if (delta === 0 && !related(e)) continue;
+    items.push({
+      event: e,
+      target: e.kind === 'void' ? byId.get(e.voids) || null : null,
+      voided: result.voidOf.has(e.id),
+      delta,
+    });
   }
   const openPositions = [];
   for (const g of result.games) {

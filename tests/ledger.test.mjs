@@ -53,7 +53,7 @@ test('战绩和跟单滑点', () => {
 test('对账单 #3 只列朋友那笔新买入', () => {
   const { events, games, statements } = sampleData();
   const r = compute(events, games);
-  const st = statement(r, events, statements[statements.length - 1]);
+  const st = statement(r, events, statements[statements.length - 1], games);
   assert.equal(st.no, 3);
   assert.equal(st.prevBalance, 21077);
   assert.equal(st.balance, 19197);
@@ -64,6 +64,28 @@ test('对账单 #3 只列朋友那笔新买入', () => {
   assert.equal(st.openPositions[0].contracts, 30);
   assert.equal(st.transfersNet + st.realized - st.openBasis, st.balance);
   assert.equal(st.uptoEventId, 9);
+});
+
+test('撤销已对过账的转账，新对账单里列出撤销和金额，前后对得上', () => {
+  const { events, games, statements } = sampleData();
+  const all = [...events, { id: 10, kind: 'void', voids: 1, note: '记重了', occurred_at: '2026-11-03T20:00:00-08:00' }];
+  const r = compute(all, games);
+  const st = statement(r, all, statements[1], games);
+  assert.equal(st.items.length, 2);
+  assert.equal(st.items[1].event.id, 10);
+  assert.equal(st.items[1].delta, -20000);
+  assert.equal(st.prevBalance + st.items.reduce((s, x) => s + x.delta, 0), st.balance);
+  assert.equal(st.transfersNet + st.realized - st.openBasis, st.balance);
+});
+
+test('撤销朋友已结算那场的买入，结算回款也跟着变，对账单仍然对得上', () => {
+  const { events, games, statements } = sampleData();
+  const all = [...events, { id: 10, kind: 'void', voids: 3, occurred_at: '2026-11-03T20:00:00-08:00' }];
+  const r = compute(all, games);
+  const st = statement(r, all, statements[1], games);
+  // 撤掉 −23.37 的买入，同时那场赢的 +50 也没了：净 −26.63
+  assert.equal(st.items.find((x) => x.event.id === 10).delta, -2663);
+  assert.equal(st.prevBalance + st.items.reduce((s, x) => s + x.delta, 0), st.balance);
 });
 
 test('提前卖出一部分：按平均成本结转，回款进朋友余额', () => {

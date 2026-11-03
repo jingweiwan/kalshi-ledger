@@ -1,0 +1,32 @@
+name: 测试
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 记账计算测试
+        run: npm test
+      - name: 数据库权限测试
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -c 'create database kl'
+          psql -v ON_ERROR_STOP=1 -d kl -f tests/supabase_stub.sql
+          psql -v ON_ERROR_STOP=1 -d kl -q -f supabase/schema.sql
+          psql -v ON_ERROR_STOP=1 -d kl -f tests/rls_test.sql
