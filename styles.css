@@ -40,8 +40,9 @@ input, select, textarea { font: inherit; color: var(--ink); }
 .empty { color: var(--sub); margin: 0; padding: 6px 0; font-size: 14px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
-.demo { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 9px 12px; font-size: 12.5px; font-weight: 700; }
-.demo a { text-decoration: underline; }
+.demo { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 9px 12px; font-size: 12.5px; font-weight: 700; }
+.totop { position: fixed; z-index: 25; width: 44px; height: 44px; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 20px; font-weight: 800; text-align: center; box-shadow: 0 4px 14px var(--shadow);
+  right: max(16px, env(safe-area-inset-right, 0px), calc((100vw - 480px) / 2 + 16px)); bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
 
 /* 头部 */
 .hdr { display: flex; justify-content: space-between; align-items: center; min-height: 34px; }

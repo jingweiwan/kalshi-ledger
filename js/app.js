@@ -156,8 +156,8 @@ function demoBanner() {
   const text = S.store.notConfigured
     ? '还没连上数据库，现在看到的是示例数据。改动只在这个页面里，刷新就恢复。'
     : '示例模式：数据是假的，刷新就恢复。';
-  const exit = S.store.notConfigured ? '' : ` <a href="${location.pathname}">退出示例</a>`;
-  return `<div class="demo">${text}${exit}</div>`;
+  const exit = S.store.notConfigured ? '' : `<a class="pill small" href="${location.pathname}">‹ 返回登录</a>`;
+  return `<div class="demo"><span>${text}</span>${exit}</div>`;
 }
 
 // ───────────── 登录 / 建账本 ─────────────
@@ -897,6 +897,15 @@ for (const type of ['input', 'change']) {
 
 // ───────────── 启动 ─────────────
 window.addEventListener('hashchange', () => { closeSheet(); render(); });
+
+const $top = document.getElementById('totop');
+const toTop = () => window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+window.addEventListener('scroll', () => { $top.hidden = window.scrollY < 400; }, { passive: true });
+$top.addEventListener('click', toTop);
+$tabbar.addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-tab]');
+  if (a && a.classList.contains('on') && (location.hash || '#/') === a.getAttribute('href')) { e.preventDefault(); toTop(); }
+});
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$sheet.hidden) closeSheet(); });
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden || !S.ledger) return;
