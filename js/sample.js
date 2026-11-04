@@ -52,5 +52,6 @@ export function sampleData() {
     kf('demo-k3', { order_id: 'demo-o2', market_ticker: 'KXNBAGAME-26NOV04GSWHOU-HOU', side: 'b', action: 'buy', contracts: 5, price_cents: 48, notional_cents: 240, fee_cents: 9, occurred_at: '2026-11-04T19:30:00-08:00' }),
   ];
   const kalshiSync = { since: '2026-11-01', last_run_at: '2026-11-04T19:15:00-08:00', last_imported: 2, last_message: null };
-  return { ledger, games, events, statements, kalshi, kalshiSync };
+  const fx = { pair: 'USDCNY', rate: 6.684, source: 'open.er-api.com', updated_at: '2026-11-04T08:07:00+08:00' };
+  return { ledger, games, events, statements, kalshi, kalshiSync, fx };
 }

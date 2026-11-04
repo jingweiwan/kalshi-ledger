@@ -67,7 +67,23 @@ async function rpc(name, args) {
   return text ? JSON.parse(text) : null;
 }
 
-export async function run({ get, call, log = console.log, token }) {
+// 美元兑人民币：先用 open.er-api.com（每天更新），不行再用欧洲央行的数据
+export async function fetchRate() {
+  const sources = [
+    ['open.er-api.com', 'https://open.er-api.com/v6/latest/USD', (d) => d.result === 'success' && d.rates?.CNY],
+    ['欧洲央行', 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=CNY', (d) => d.rates?.CNY],
+  ];
+  for (const [source, url, pick] of sources) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const rate = res.ok ? Number(pick(await res.json())) : NaN;
+      if (rate >= 1 && rate <= 20) return { rate, source };
+    } catch { /* 换下一个 */ }
+  }
+  return null;
+}
+
+export async function run({ get, call, log = console.log, token, rate = fetchRate }) {
   const info = await call('kalshi_sync_info', { p_token: token });
   // 起始日期按北京时间零点算（你们俩都在国内）
   const sinceMs = Date.parse(`${info.since}T00:00:00+08:00`);
@@ -94,7 +110,15 @@ export async function run({ get, call, log = console.log, token }) {
   const message = `Kalshi 成交 ${fills.length} 笔（NBA 比赛 ${nbaFills.length} 笔），整理出 ${mapped.fills.length} 条，跳过 ${mapped.skipped.length} 条，出结果 ${results.length} 场`;
   const out = await call('kalshi_ingest', { p_token: token, p_fills: mapped.fills, p_results: results, p_message: message });
   log(`${message}；新导入 ${out.imported} 条，自动结算 ${out.settled} 场`);
-  return { ...out, mapped: mapped.fills.length, skipped: mapped.skipped.length, results: results.length };
+  // 汇率失败不影响同步
+  const fx = await rate();
+  if (fx) {
+    try {
+      await call('set_fx_rate', { p_token: token, p_rate: fx.rate, p_source: fx.source });
+      log(`汇率 1 美元 = ${fx.rate} 元（${fx.source}）`);
+    } catch (err) { log('汇率没更新：' + err.message); }
+  } else log('汇率没取到，下次再试');
+  return { ...out, mapped: mapped.fills.length, skipped: mapped.skipped.length, results: results.length, fx };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -105,6 +105,17 @@ create table if not exists public.statements (
   unique (ledger_id, no)
 );
 
+-- ───────────── 汇率 ─────────────
+-- 约定汇率：你们俩约好按固定汇率算人民币时填（1 美元 = ? 元），空着就用自动汇率
+alter table public.ledgers add column if not exists fx_rate numeric(10, 4) check (fx_rate is null or fx_rate > 0);
+-- 自动汇率：同步程序每小时更新
+create table if not exists public.fx_rates (
+  pair text primary key,                    -- 'USDCNY'
+  rate numeric(12, 6) not null check (rate > 0),
+  source text,
+  updated_at timestamptz not null default now()
+);
+
 -- ───────────── Kalshi 同步 ─────────────
 -- 同步程序（GitHub Actions，每小时一次）把 Kalshi 账户里的 NBA 比赛成交写进 kalshi_fills（待分配），
 -- 持有人在账本里点「我的 / 朋友的」后变成正式记录。同步程序只拿一个「同步令牌」，
@@ -386,6 +397,25 @@ begin
   return json_build_object('imported', n_fills, 'settled', n_settled);
 end $$;
 
+-- 同步程序：更新自动汇率
+create or replace function public.set_fx_rate(p_token text, p_rate numeric, p_source text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.kalshi_ledger_for_token(p_token) is null then raise exception '同步令牌不对'; end if;
+  if p_rate is null or p_rate < 1 or p_rate > 20 then raise exception '汇率不对：%', p_rate; end if;
+  insert into public.fx_rates (pair, rate, source, updated_at) values ('USDCNY', p_rate, left(p_source, 60), now())
+  on conflict (pair) do update set rate = excluded.rate, source = excluded.source, updated_at = now();
+end $$;
+
+-- 持有人设置约定汇率（传 null 清除）
+create or replace function public.set_ledger_fx(p_ledger uuid, p_rate numeric) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.ledger_role(p_ledger) is distinct from 'owner' then raise exception '只有账户持有人可以设置约定汇率'; end if;
+  if p_rate is not null and (p_rate < 1 or p_rate > 20) then raise exception '汇率填 1 到 20 之间的数，比如 7.2'; end if;
+  update public.ledgers set fx_rate = round(p_rate, 4) where id = p_ledger;
+end $$;
+
 -- 持有人把一笔 Kalshi 成交分给自己或朋友（分错了可以撤销那条记录，再重新分）
 create or replace function public.assign_kalshi_fill(p_ledger uuid, p_id text, p_holder text) returns public.events
 language plpgsql security definer set search_path = public as $$
@@ -466,6 +496,10 @@ drop policy if exists statements_read on public.statements;
 create policy statements_read on public.statements for select to authenticated
   using (public.ledger_role(ledger_id) is not null);
 
+alter table public.fx_rates enable row level security;
+drop policy if exists fx_rates_read on public.fx_rates;
+create policy fx_rates_read on public.fx_rates for select to authenticated using (true);
+
 alter table public.kalshi_sync enable row level security;
 alter table public.kalshi_fills enable row level security;
 alter table public.kalshi_results enable row level security;
@@ -478,10 +512,10 @@ create policy kalshi_results_read on public.kalshi_results for select to authent
 
 -- 表权限：只给读和新增，不给改和删（改动只能走上面的函数）
 revoke all on public.ledgers, public.games, public.events, public.statements,
-  public.kalshi_sync, public.kalshi_fills, public.kalshi_results from anon, authenticated;
+  public.kalshi_sync, public.kalshi_fills, public.kalshi_results, public.fx_rates from anon, authenticated;
 grant select on public.ledgers, public.statements to authenticated;
 grant select, insert on public.games, public.events to authenticated;
-grant select on public.kalshi_fills, public.kalshi_results to authenticated;
+grant select on public.kalshi_fills, public.kalshi_results, public.fx_rates to authenticated;
 
 revoke all on function public.ledger_role(uuid), public.create_ledger(text), public.join_ledger(text, text),
   public.confirm_events(uuid, bigint), public.create_statement(uuid, integer, bigint),
@@ -499,3 +533,8 @@ revoke all on function public.set_kalshi_sync(uuid, text, date), public.kalshi_s
   public.assign_kalshi_fill(uuid, text, text), public.ignore_kalshi_fill(uuid, text, boolean) from public, anon;
 grant execute on function public.set_kalshi_sync(uuid, text, date), public.kalshi_sync_status(uuid),
   public.assign_kalshi_fill(uuid, text, text), public.ignore_kalshi_fill(uuid, text, boolean) to authenticated;
+
+-- 汇率
+revoke all on function public.set_fx_rate(text, numeric, text), public.set_ledger_fx(uuid, numeric) from public, anon;
+grant execute on function public.set_fx_rate(text, numeric, text) to anon, authenticated;
+grant execute on function public.set_ledger_fx(uuid, numeric) to authenticated;

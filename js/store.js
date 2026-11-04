@@ -1,7 +1,7 @@
 // 数据存取：Supabase（正式）或内存（示例模式），两者接口一样。
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mw0j604m';
-import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mw0j604m';
-import { compute } from './ledger.js?v=mw0j604m';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mw1tftg5';
+import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mw1tftg5';
+import { compute } from './ledger.js?v=mw1tftg5';
 
 export function createStore() {
   const wantsDemo = new URLSearchParams(location.search).has('demo');
@@ -75,17 +75,18 @@ function supabaseStore() {
       return unwrap(await sb.rpc('join_ledger', { p_code: code, p_partner_name: partnerName }));
     },
     async load(ledgerId) {
-      const [games, events, statements, kalshi, kalshiSync] = await Promise.all([
+      const [games, events, statements, kalshi, kalshiSync, fx] = await Promise.all([
         pageAll(() => sb.from('games').select('*').eq('ledger_id', ledgerId).order('created_at')),
         pageAll(() => sb.from('events').select('*').eq('ledger_id', ledgerId).order('id')),
         pageAll(() => sb.from('statements').select('*').eq('ledger_id', ledgerId).order('no')),
         // 还没运行新版 schema.sql 时这张表不存在，就当没有
         pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch(() => []),
         sb.rpc('kalshi_sync_status', { p_ledger: ledgerId }).then((r) => (r.error ? null : r.data)),
+        sb.from('fx_rates').select('*').eq('pair', 'USDCNY').maybeSingle().then((r) => (r.error ? null : r.data)),
       ]);
       for (const e of events) if (e.contracts != null) e.contracts = Number(e.contracts);
       for (const k of kalshi) k.contracts = Number(k.contracts);
-      return { games, events, statements, kalshi, kalshiSync };
+      return { games, events, statements, kalshi, kalshiSync, fx };
     },
     async addGame(row) {
       return unwrap(await sb.from('games').insert(row).select().single());
@@ -110,6 +111,9 @@ function supabaseStore() {
     },
     async setKalshiSync(ledgerId, tokenHash, since) {
       return unwrap(await sb.rpc('set_kalshi_sync', { p_ledger: ledgerId, p_token_hash: tokenHash, p_since: since }));
+    },
+    async setLedgerFx(ledgerId, rate) {
+      return unwrap(await sb.rpc('set_ledger_fx', { p_ledger: ledgerId, p_rate: rate }));
     },
   };
 }
@@ -137,7 +141,7 @@ function demoStore(notConfigured) {
     async myLedger() { return clone(d.ledger); },
     async createLedger() { return clone(d.ledger); },
     async joinLedger() { return clone(d.ledger); },
-    async load() { return clone({ games: d.games, events: d.events, statements: d.statements, kalshi: d.kalshi.filter((k) => k.status !== 'assigned'), kalshiSync: d.kalshiSync }); },
+    async load() { return clone({ games: d.games, events: d.events, statements: d.statements, kalshi: d.kalshi.filter((k) => k.status !== 'assigned'), kalshiSync: d.kalshiSync, fx: d.fx }); },
     async addGame(row) {
       mustOwner();
       const g = { id: `g${nextGame++}`, league: 'NBA', starts_at: null, created_at: now(), ...row };
@@ -202,6 +206,10 @@ function demoStore(notConfigured) {
     async setKalshiSync(_ledgerId, _hash, since) {
       mustOwner();
       d.kalshiSync = { since, last_run_at: null, last_imported: null, last_message: null };
+    },
+    async setLedgerFx(_ledgerId, rate) {
+      mustOwner();
+      d.ledger.fx_rate = rate;
     },
     async confirmStatement(id) {
       const s = d.statements.find((x) => x.id === id);

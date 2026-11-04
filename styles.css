@@ -233,3 +233,10 @@ select.in { appearance: none; -webkit-appearance: none; background-image: linear
 .steps { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 .steps a { color: var(--up); font-weight: 700; text-decoration: underline; }
 .steps code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; background: var(--bg); padding: 1px 5px; border-radius: 5px; }
+
+/* 显示货币切换 */
+.hdr-r { display: flex; align-items: center; gap: 8px; }
+.cur-seg { display: inline-flex; background: var(--fill); border-radius: 999px; padding: 3px; }
+.cur-seg button { min-width: 30px; padding: 4px 9px; border-radius: 999px; font-weight: 800; font-size: 13px; color: var(--sub); text-align: center; }
+.cur-seg button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px var(--shadow); }
+.fx-line { font-size: 12.5px; color: var(--sub); font-weight: 600; }

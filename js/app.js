@@ -1,9 +1,9 @@
 // 合买账本 · 页面
-import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw0j604m';
-import { createStore } from './store.js?v=mw0j604m';
-import { PUBLIC_URL } from './config.js?v=mw0j604m';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw0j604m';
-import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw0j604m';
+import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw1tftg5';
+import { createStore } from './store.js?v=mw1tftg5';
+import { PUBLIC_URL } from './config.js?v=mw1tftg5';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw1tftg5';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw1tftg5';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
@@ -16,6 +16,7 @@ const S = {
   gameById: new Map(), eventById: new Map(),
   params: { id: null, q: new URLSearchParams() },
   authMode: 'signin', after: null, lastHash: null,
+  cur: (() => { try { return localStorage.getItem('kl.cur') === 'CNY' ? 'CNY' : 'USD'; } catch { return 'USD'; } })(),
 };
 
 const REPO_URL = 'https://github.com/jingweiwan/kalshi-ledger';
@@ -38,6 +39,26 @@ const av = (h, cls = '') => `<i class="av ${h === 'owner' ? 'me' : 'fr'} ${cls}"
 const gameTitle = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '已删除的比赛');
 const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
 const isOwner = () => S.role === 'owner';
+
+// ───────────── 汇率 ─────────────
+// 约定汇率优先（两个人看到的一样），没有就用同步程序每小时更新的自动汇率
+function fxRate() {
+  if (L()?.fx_rate != null) return { rate: Number(L().fx_rate), kind: 'agreed' };
+  const fx = S.data.fx;
+  return fx?.rate ? { rate: Number(fx.rate), kind: 'auto', at: fx.updated_at, source: fx.source } : null;
+}
+const showCny = () => S.cur === 'CNY' && Boolean(fxRate());
+function yuan(cents) {
+  const fen = Math.round(Math.abs(cents) * fxRate().rate);
+  return (cents < 0 ? '−' : '') + '¥' + (fen / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+const dMoney = (c) => (showCny() ? yuan(c) : money(c));
+const dSigned = (c) => (showCny() ? (c > 0 ? '+' : c < 0 ? '−' : '') + yuan(Math.abs(c)) : signed(c));
+function fxNote() {
+  const fx = fxRate();
+  if (!fx) return '';
+  return `汇率 ${fx.rate.toFixed(4)}（${fx.kind === 'agreed' ? '约定' : `自动，${dt(fx.at)} 更新`}）`;
+}
 
 function balanceLabel(b) {
   if (b === 0) return '两清';
@@ -282,7 +303,8 @@ function statusTag(e) {
   return `<span class="tag ok">${e.confirmed_via === 'wechat' ? `微信确认${e.statement_no ? ' #' + e.statement_no : ''}` : '已确认'}</span>`;
 }
 
-function eventRow(e) {
+function eventRow(e, { fx = false } = {}) {
+  const fmt = fx ? dSigned : signed;
   const d = describe(e);
   const voided = S.r.voidOf.has(e.id);
   const eff = S.r.effects.get(e.id);
@@ -293,9 +315,9 @@ function eventRow(e) {
   else icon = '<span class="ic-c no">↺</span>';
   let amount = '';
   if (e.kind === 'fill' && e.holder === 'owner') {
-    amount = `<span class="amt num muted">${signed(e.action === 'buy' ? -fillAmount(e) : fillAmount(e))}</span>`;
+    amount = `<span class="amt num muted">${fmt(e.action === 'buy' ? -fillAmount(e) : fillAmount(e))}</span>`;
   } else if (eff && eff.involvesPartner) {
-    amount = `<span class="amt num ${tone(eff.partnerDelta)}">${signed(eff.partnerDelta)}</span>`;
+    amount = `<span class="amt num ${tone(eff.partnerDelta)}">${fmt(eff.partnerDelta)}</span>`;
   }
   return `<button type="button" class="li" data-act="event" data-id="${e.id}">${icon}
     <div class="li-main"><b class="${voided ? 'strike' : ''}">${esc(d.title)}</b><span class="sub">#${e.id} · ${esc(dt(e.occurred_at))}${d.sub ? ' · ' + esc(d.sub) : ''}${e.kalshi_fill_id || (e.kind === 'settle' && e.note === 'Kalshi 自动结算') ? ' · Kalshi' : ''}</span></div>
@@ -374,11 +396,15 @@ function viewHome() {
   const recent = [...S.data.events].sort((a, b2) => b2.id - a.id).slice(0, 5);
   return `
     <div class="hdr"><a class="hdr-set" href="#/settings"><span class="avs">${av('owner')}${av('partner')}</span><span class="set-l">设置 ›</span></a>
-      <a class="chip-btn" href="#/statement">${ICON.share}对账单</a></div>
+      <div class="hdr-r"><div class="cur-seg" role="group" aria-label="显示货币">
+        <button type="button" data-act="cur" data-cur="USD" class="${S.cur === 'USD' ? 'on' : ''}" aria-pressed="${S.cur === 'USD'}">$</button>
+        <button type="button" data-act="cur" data-cur="CNY" class="${S.cur === 'CNY' ? 'on' : ''}" aria-pressed="${S.cur === 'CNY'}">¥</button></div>
+      <a class="chip-btn" href="#/statement">${ICON.share}对账单</a></div></div>
     <div class="hero-n">
       <span class="lbl">${esc(balanceLabel(b))}</span>
-      <span class="big num">${money(Math.abs(b))}</span>
-      <span class="chg"><span class="${tone(real)}">${real >= 0 ? '▲' : '▼'} ${money(Math.abs(real))}</span> ${esc(realLabel)}${r.openBasis.partner ? ` · 持仓成本 ${money(r.openBasis.partner)}` : ''}</span>
+      <span class="big num">${dMoney(Math.abs(b))}</span>
+      <span class="chg"><span class="${tone(real)}">${real >= 0 ? '▲' : '▼'} ${dMoney(Math.abs(real))}</span> ${esc(realLabel)}${r.openBasis.partner ? ` · 持仓成本 ${dMoney(r.openBasis.partner)}` : ''}</span>
+      ${S.cur === 'CNY' ? `<span class="fx-line num">${showCny() ? `≈ ${money(Math.abs(b))} · ${esc(fxNote())}` : '还没有汇率：在设置里填一个约定汇率，或者等 Kalshi 同步自动更新'}</span>` : ''}
     </div>
     ${chartSVG()}
     ${banners}
@@ -387,7 +413,7 @@ function viewHome() {
     <div class="sec-t">进行中</div>
     ${open.length ? `<div class="list">${open.map(gameRow).join('')}</div>` : `<p class="empty">没有进行中的比赛。${isOwner() ? '点「记一笔成交」开始。' : ''}</p>`}
     <div class="sec-t row">最近记录 <a class="more" href="#/records">全部 ›</a></div>
-    ${recent.length ? `<div class="list">${recent.map(eventRow).join('')}</div>` : '<p class="empty">还没有记录。</p>'}`;
+    ${recent.length ? `<div class="list">${recent.map((e) => eventRow(e, { fx: true })).join('')}</div>` : '<p class="empty">还没有记录。</p>'}`;
 }
 
 // ───────────── 比赛 ─────────────
@@ -771,7 +797,7 @@ function viewStatement() {
   const history = S.data.statements.slice().reverse();
   if (cur) {
     S.after = () => {
-      const m = statementModel(cur.st, S.data.games, cur.row?.created_at);
+      const m = statementModel(cur.st, S.data.games, cur.row?.created_at, fxRate());
       const img = document.getElementById('stmt-img');
       if (img) img.src = drawStatement(m).toDataURL('image/png');
     };
@@ -814,10 +840,25 @@ function viewSettings() {
     </div>
     ${isOwner() ? `<div class="kv"><span class="sub">邀请码${L().partner_id ? '（已加入）' : ''}</span><button type="button" class="pill" data-act="copy" data-text="${esc(L().invite_code)}">${esc(L().invite_code)} · 复制</button></div>` : ''}
     ${store.demo ? `<div class="sec-t">示例模式</div><div class="seg"><button type="button" class="${store.demoRole === 'owner' ? 'on' : ''}" data-act="demo-role" data-role="owner">持有人视角</button><button type="button" class="${store.demoRole === 'partner' ? 'on' : ''}" data-act="demo-role" data-role="partner">朋友视角</button></div>` : ''}
+    ${fxSettings()}
     ${kalshiSettings()}
     <div class="sec-t">帮助</div>
     <a class="li" href="https://github.com/jingweiwan/kalshi-ledger#readme" target="_blank" rel="noopener"><div class="li-main"><b>使用说明</b><span class="sub">记账规则、怎么对账</span></div><span class="chev">›</span></a>
     ${store.demo ? '' : `<p class="sub">登录邮箱：${esc(S.user?.email || '')}</p><button type="button" class="cta ghost" data-act="signout">退出登录</button>`}`;
+}
+
+function fxSettings() {
+  const auto = S.data.fx;
+  const agreed = L().fx_rate != null ? Number(L().fx_rate) : null;
+  return `<div class="sec-t">汇率</div>
+    <div class="kv"><span class="sub">自动汇率</span><b class="num">${auto ? `1 美元 = ${Number(auto.rate).toFixed(4)} 元` : '还没有'}</b></div>
+    <span class="sub">${auto ? `${esc(auto.source || '')} · ${dt(auto.updated_at)} 更新` : '设置好 Kalshi 自动同步后，每小时更新一次'}</span>
+    ${isOwner() ? `<form data-form="fx" class="form" novalidate>
+      <label class="tk"><span>约定汇率</span><input class="tk-in num" name="rate" id="fx-rate" inputmode="decimal" placeholder="不填就用自动汇率" value="${agreed ?? ''}" autocomplete="off"></label>
+      <p class="err" id="fx-err" hidden></p>
+      <div class="btns"><button class="cta" type="submit">保存约定汇率</button>${agreed ? '<button type="button" class="cta ghost" data-act="fx-clear">改回自动汇率</button>' : ''}</div>
+    </form>` : `<div class="kv"><span class="sub">约定汇率</span><b class="num">${agreed ? agreed.toFixed(4) : '没有约定，用自动汇率'}</b></div>`}
+    <span class="sub">填了约定汇率，你们俩看到的人民币金额都按它算。首页右上角「$ / ¥」切换显示货币，对账单上也会多一行人民币。</span>`;
 }
 
 function kalshiSettings() {
@@ -909,7 +950,7 @@ const ACTIONS = {
     el.disabled = true;
     try {
       const { row, st } = await ensureStatement();
-      const m = statementModel(st, S.data.games, row.created_at);
+      const m = statementModel(st, S.data.games, row.created_at, fxRate());
       const canvas = drawStatement(m);
       const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
       const file = new File([blob], `对账单-${m.no}.png`, { type: 'image/png' });
@@ -924,7 +965,7 @@ const ACTIONS = {
   },
   async 'statement-copy'() {
     const { row, st } = await ensureStatement();
-    await copyText(statementText(statementModel(st, S.data.games, row.created_at)));
+    await copyText(statementText(statementModel(st, S.data.games, row.created_at, fxRate())));
     toast('文字已复制，去微信粘贴');
   },
   async 'statement-confirm'(el) {
@@ -937,6 +978,16 @@ const ACTIONS = {
     await reload(); render(); toast('已确认');
   },
   'demo-role'(el) { S.store.setDemoRole(el.dataset.role); },
+  cur(el) {
+    S.cur = el.dataset.cur;
+    try { localStorage.setItem('kl.cur', S.cur); } catch { /* 存不了就只在这次有效 */ }
+    render();
+  },
+  async 'fx-clear'() {
+    await S.store.setLedgerFx(S.ledger.id, null);
+    S.ledger = await S.store.myLedger();
+    await reload(); render(); toast('改回自动汇率');
+  },
   async 'kx-assign'(el) {
     const ids = el.dataset.ids.split(',');
     const holder = el.dataset.holder;
@@ -976,6 +1027,13 @@ function showErr(f, id, msg) {
 }
 
 const FORMS = {
+  async fx(f) {
+    const t = String(new FormData(f).get('rate') || '').trim();
+    if (!/^\d{1,2}(\.\d{1,4})?$/.test(t) || Number(t) < 1 || Number(t) > 20) return showErr(f, 'fx-err', '汇率填 1 到 20 之间的数，最多 4 位小数，比如 7.2');
+    await S.store.setLedgerFx(S.ledger.id, Number(t));
+    S.ledger = await S.store.myLedger();
+    await reload(); render(); toast('约定汇率已保存');
+  },
   async 'kx-token'(f) {
     const since = new FormData(f).get('since');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since || '')) return showErr(f, 'kx-err', '选一个开始日期');

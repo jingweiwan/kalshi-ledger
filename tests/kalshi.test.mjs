@@ -100,21 +100,23 @@ test('同步流程：读起始日期 → 拉成交 → 查结果 → 写入账�
     }
     throw new Error('unexpected ' + path);
   };
-  let ingested;
+  let ingested, fxSet;
   const call = async (name, args) => {
     calls.push(['rpc', name]);
     if (name === 'kalshi_sync_info') return { since: '2026-11-01', open_events: ['KXNBAGAME-26NOV05BOSNYK'] };
+    if (name === 'set_fx_rate') { fxSet = args; return null; }
     ingested = args;
     return { imported: args.p_fills.length, settled: 0 };
   };
   const logs = [];
-  const out = await run({ get, call, token: 't', log: (m) => logs.push(m) });
+  const out = await run({ get, call, token: 't', log: (m) => logs.push(m), rate: async () => ({ rate: 6.684, source: 'test' }) });
   assert.equal(calls.filter((c) => c[1] === '/portfolio/fills').length, 2, '翻页');
   assert.equal(calls.find((c) => c[1] === '/portfolio/fills')[2].min_ts, Math.floor(Date.parse('2026-11-01T00:00:00+08:00') / 1000) - 7 * 86400);
   assert.deepEqual(ingested.p_fills.map((f) => f.id), ['f1']);
   assert.equal(ingested.p_fills[0].order_id, 'o-f1');
   assert.deepEqual(ingested.p_results, [{ event_ticker: 'KXNBAGAME-26NOV02PHXGSW', winner: 'b', decided_at: '2026-11-03T05:55:27Z' }]);
   assert.equal(out.imported, 1);
-  assert.equal(logs.length, 1);
-  assert.ok(!/KXNBA|0\.8|勇士/.test(logs[0]), '日志里没有交易内容');
+  assert.equal(fxSet.p_rate, 6.684);
+  assert.equal(logs.length, 2);
+  assert.ok(!/KXNBA|0\.8|勇士/.test(logs.join('\n')), '日志里没有交易内容');
 });

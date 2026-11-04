@@ -1,6 +1,6 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
-import { money, signed, price, dt, full, day, qty } from './format.js?v=mw0j604m';
-import { avgFillPrice } from './ledger.js?v=mw0j604m';
+import { money, signed, price, dt, full, day, qty } from './format.js?v=mw1tftg5';
+import { avgFillPrice } from './ledger.js?v=mw1tftg5';
 
 const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
 const title = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '');
@@ -26,7 +26,7 @@ function describe(e, gameById) {
 }
 
 /** 把 statement() 的结果整理成要显示的几块内容 */
-export function statementModel(st, games, createdAt = new Date().toISOString()) {
+export function statementModel(st, games, createdAt = new Date().toISOString(), fx = null) {
   const gameById = new Map(games.map((g) => [g.id, g]));
   const owe = st.balance > 0 ? '我欠你' : st.balance < 0 ? '你欠我' : '两清';
   const items = st.items.map((it) => {
@@ -53,6 +53,7 @@ export function statementModel(st, games, createdAt = new Date().toISOString()) 
     no: st.no,
     owe,
     amount: money(Math.abs(st.balance)),
+    cny: fx ? `≈ ¥${(Math.round(Math.abs(st.balance) * fx.rate) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（汇率 ${fx.rate.toFixed(4)}${fx.kind === 'agreed' ? '，约定' : ''}）` : null,
     meta: `${full(createdAt)}${st.prevAt ? ' · 上次对账 ' + day(st.prevAt) : ''}`,
     change: `${prev} · 新增 ${items.length} 笔`,
     items,
@@ -63,7 +64,7 @@ export function statementModel(st, games, createdAt = new Date().toISOString()) 
 }
 
 export function statementText(m) {
-  const lines = [`合买对账单 #${m.no}`, m.meta, `${m.owe}：${m.amount}`, m.change, ''];
+  const lines = [`合买对账单 #${m.no}`, m.meta, `${m.owe}：${m.amount}${m.cny ? ' ' + m.cny : ''}`, m.change, ''];
   lines.push('【新增】');
   if (!m.items.length) lines.push('没有新记录');
   for (const it of m.items) lines.push(`· ${it.label}  ${signed(it.amount)}（${it.sub}）`);
@@ -116,14 +117,15 @@ export function drawStatement(m) {
     // 头部
     if (draw) {
       ctx.fillStyle = C.friendSoft;
-      roundRect(ctx, P, y, IW, 260, 28); ctx.fill();
+      roundRect(ctx, P, y, IW, m.cny ? 300 : 260, 28); ctx.fill();
     }
     text('合买对账单', P + 28, y + 52, font(800, 32), C.ink);
     text(`#${m.no}`, W - P - 28, y + 52, font(700, 28), C.sub, 'right');
     text(m.meta, P + 28, y + 92, font(600, 22), C.sub);
     text(m.owe, P + 28, y + 140, font(800, 28), C.friend);
     text(m.amount, P + 28, y + 222, font(800, 76), C.ink);
-    y += 260;
+    if (m.cny) text(m.cny, P + 28, y + 268, font(700, 26), C.sub);
+    y += m.cny ? 300 : 260;
     text(m.change, P, y + 44, font(600, 24), C.sub);
     y += 60;
 

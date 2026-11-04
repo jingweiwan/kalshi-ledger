@@ -178,6 +178,23 @@ do $$ begin
 end $$;
 select public.ignore_kalshi_fill(:'ledger_id', 'K2', false);
 select pg_temp.must_fail(format('select public.assign_kalshi_fill(%L, ''K2'', ''owner'')', :'ledger_id'), '比赛结算后再分配（要先撤销结算）');
+-- 汇率
+reset role; set role anon;
+select public.set_fx_rate('tok-123', 6.684036, 'open.er-api.com');
+\echo PASS 同步程序用令牌更新自动汇率
+select pg_temp.must_fail('select public.set_fx_rate(''wrong'', 7, ''x'')', '错误令牌更新汇率');
+select pg_temp.must_fail('select public.set_fx_rate(''tok-123'', 100, ''x'')', '离谱的汇率');
+select pg_temp.must_fail('select * from public.fx_rates', '没登录读汇率');
+reset role; set role authenticated;
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+do $$ begin if (select rate from public.fx_rates where pair = 'USDCNY') <> 6.684036 then raise exception 'FAIL: 读不到自动汇率'; end if; raise notice 'PASS 登录用户能读自动汇率'; end $$;
+select pg_temp.must_fail(format('select public.set_ledger_fx(%L, 7.2)', :'ledger_id'), '朋友设置约定汇率');
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select public.set_ledger_fx(:'ledger_id', 7.2);
+do $$ begin if (select fx_rate from public.ledgers) <> 7.2 then raise exception 'FAIL: 约定汇率没存上'; end if; raise notice 'PASS 持有人设置约定汇率'; end $$;
+select pg_temp.must_fail(format('select public.set_ledger_fx(%L, 0.5)', :'ledger_id'), '约定汇率太小');
+select public.set_ledger_fx(:'ledger_id', null);
+do $$ begin if (select fx_rate from public.ledgers) is not null then raise exception 'FAIL: 清除失败'; end if; raise notice 'PASS 清除约定汇率'; end $$;
 reset role;
 do $$ begin
   if (select last_imported from public.kalshi_sync) is null then raise exception 'FAIL: 没记录同步时间'; end if;
