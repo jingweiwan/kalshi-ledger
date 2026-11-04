@@ -42,7 +42,7 @@ export function fillAmount(e) {
 }
 
 function newSide() {
-  return { units: 0, basis: 0, boughtUnits: 0, boughtNotional: 0, firstBuyAt: null };
+  return { units: 0, basis: 0, boughtUnits: 0, boughtNotional: 0, firstBuyAt: null, realized: 0, closedCost: 0 };
 }
 function newHolder() {
   return { a: newSide(), b: newSide(), realized: 0, closedCost: 0, payout: 0, bought: false, buyCost: 0 };
@@ -82,6 +82,7 @@ export function compute(events, games = []) {
   const effects = new Map(); // event id -> { partnerDelta, balanceAfter, involvesPartner, warning }
   const timeline = [];
   const problems = [];
+  const realizedLog = []; // 每一笔落袋的盈亏：{ at, holder, gameId, side, pnl }
 
   for (const e of sorted) {
     if (e.kind === 'void' || voidOf.has(e.id)) continue;
@@ -125,6 +126,9 @@ export function compute(events, games = []) {
         pos.units -= n;
         pos.basis -= removed;
         const pnl = proceeds - removed;
+        pos.realized += pnl;
+        pos.closedCost += removed;
+        realizedLog.push({ at: e.occurred_at, holder: e.holder, gameId: st.id, side: e.side, pnl });
         h.realized += pnl;
         h.closedCost += removed;
         realized[e.holder] += pnl;
@@ -146,7 +150,13 @@ export function compute(events, games = []) {
           for (const side of SIDES) {
             const pos = h[side];
             held += pos.units;
-            if (side === e.winner) payout += pos.units; // 每 0.01 张回 1 分
+            const sidePayout = side === e.winner ? pos.units : 0; // 每 0.01 张回 1 分
+            if (pos.units || pos.basis) {
+              pos.realized += sidePayout - pos.basis;
+              pos.closedCost += pos.basis;
+              realizedLog.push({ at: e.occurred_at, holder: who, gameId: st.id, side, pnl: sidePayout - pos.basis });
+            }
+            payout += sidePayout;
             removed += pos.basis;
             pos.units = 0;
             pos.basis = 0;
@@ -185,6 +195,8 @@ export function compute(events, games = []) {
           boughtContracts: p.boughtUnits / 100,
           avgPrice: p.boughtUnits ? (p.boughtNotional * 100) / p.boughtUnits : null,
           firstBuyAt: p.firstBuyAt,
+          realized: p.realized,
+          closedCost: p.closedCost,
         };
       }
       holders[who] = {
@@ -217,6 +229,7 @@ export function compute(events, games = []) {
     voidOf,
     timeline,
     problems,
+    realizedLog,
   };
 }
 
@@ -256,6 +269,88 @@ export function stats(result) {
     slips,
     slipAvg: slipContracts ? slipExtra / slipContracts : null,
     slipExtra: Math.round(slipExtra),
+  };
+}
+
+/** 买入价分档：价格就是市场给的胜率 */
+export const BUCKETS = [
+  { key: 'fav', label: '热门', range: '≥60¢', test: (p) => p >= 60 },
+  { key: 'even', label: '五五开', range: '40–59¢', test: (p) => p >= 40 && p < 60 },
+  { key: 'dog', label: '冷门', range: '<40¢', test: (p) => p < 40 },
+];
+
+/**
+ * 更细的战绩：只看已经结算的比赛。每个人在一场比赛里押的每一边算一次「押注」。
+ * @param {object} result compute() 的结果
+ * @param {object} opts { monthOf(iso) → 'YYYY-MM' }，默认按本地时间
+ */
+export function insights(result, { monthOf } = {}) {
+  const month = monthOf || ((iso) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const picks = [];
+  for (const g of result.games) {
+    if (!g.settled || !g.game) continue;
+    for (const holder of HOLDERS) {
+      for (const side of SIDES) {
+        const s = g.holders[holder].sides[side];
+        if (!s.boughtContracts) continue;
+        picks.push({
+          holder, gameId: g.id, game: g.game, side,
+          team: side === 'a' ? g.game.team_a : g.game.team_b,
+          price: s.avgPrice, contracts: s.boughtContracts,
+          cost: s.closedCost, pnl: s.realized, hit: side === g.settled.winner, at: g.settled.at,
+        });
+      }
+    }
+  }
+  const sum = (list) => {
+    const n = list.length, hits = list.filter((p) => p.hit).length;
+    const pnl = list.reduce((t, p) => t + p.pnl, 0), cost = list.reduce((t, p) => t + p.cost, 0);
+    const avgPrice = n ? list.reduce((t, p) => t + p.price, 0) / n : null;
+    return {
+      n, hits, pnl, cost,
+      rate: n ? hits / n : null,
+      roi: cost > 0 ? pnl / cost : null,
+      avgPrice,
+      // 押中率比市场给的胜率高几个百分点（正数 = 比市场准）
+      edge: n ? (hits / n) * 100 - avgPrice : null,
+    };
+  };
+  const accuracy = {}, buckets = {};
+  for (const holder of HOLDERS) {
+    const mine = picks.filter((p) => p.holder === holder);
+    accuracy[holder] = sum(mine);
+    buckets[holder] = Object.fromEntries(BUCKETS.map((b) => [b.key, sum(mine.filter((p) => b.test(p.price)))]));
+  }
+  // 球队：押这个队赢，你们俩合起来赚了多少
+  const byTeam = new Map();
+  for (const p of picks) {
+    if (!byTeam.has(p.team)) byTeam.set(p.team, []);
+    byTeam.get(p.team).push(p);
+  }
+  const teams = [...byTeam.entries()].map(([team, list]) => ({ team, ...sum(list) }));
+  // 每月盈亏和累计曲线（按落袋时间，含提前卖出）
+  const log = [...result.realizedLog].sort((x, y) => String(x.at).localeCompare(String(y.at)));
+  const months = new Map();
+  const curve = [{ at: null, owner: 0, partner: 0 }];
+  const run = { owner: 0, partner: 0 };
+  for (const r of log) {
+    const m = month(r.at);
+    if (!months.has(m)) months.set(m, { month: m, owner: 0, partner: 0 });
+    months.get(m)[r.holder] += r.pnl;
+    run[r.holder] += r.pnl;
+    curve.push({ at: r.at, owner: run.owner, partner: run.partner });
+  }
+  return {
+    picks,
+    accuracy,
+    buckets,
+    best: teams.filter((t) => t.pnl > 0).sort((x, y) => y.pnl - x.pnl).slice(0, 3),
+    worst: teams.filter((t) => t.pnl < 0).sort((x, y) => x.pnl - y.pnl).slice(0, 3),
+    months: [...months.values()].sort((x, y) => y.month.localeCompare(x.month)),
+    curve,
   };
 }
 

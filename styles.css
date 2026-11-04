@@ -187,13 +187,6 @@ select.in { appearance: none; -webkit-appearance: none; background-image: linear
 .cmp .hd { display: flex; align-items: center; gap: 6px; justify-content: flex-end; font-weight: 800; }
 .cmp .v { text-align: right; font-weight: 800; }
 .cmp .k { color: var(--sub); font-weight: 700; }
-.slip { background: var(--fill); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 4px; }
-.bars { display: flex; flex-direction: column; gap: 7px; padding-top: 8px; }
-.bar-row { display: grid; grid-template-columns: 52px 1fr 40px; gap: 8px; align-items: center; font-size: 12.5px; font-weight: 700; }
-.bar-row > span:last-child { text-align: right; }
-.bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
-.bar i { display: block; height: 100%; background: var(--friend); border-radius: 4px; }
-.bar i.neg { background: var(--up); }
 
 /* 对账单 */
 .stmt-preview { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: #FFFFFF; }
@@ -240,3 +233,13 @@ select.in { appearance: none; -webkit-appearance: none; background-image: linear
 .cur-seg button { min-width: 30px; padding: 4px 9px; border-radius: 999px; font-weight: 800; font-size: 13px; color: var(--sub); text-align: center; }
 .cur-seg button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px var(--shadow); }
 .fx-line { font-size: 12.5px; color: var(--sub); font-weight: 600; }
+
+/* 战绩：走势图图例、分档、结论 */
+.legend2 { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; font-weight: 700; color: var(--sub); }
+.legend2 span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.me { background: var(--ink); }
+.dot.fr { background: var(--friend); }
+.cmp .cell { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.cmp .k .sub { font-size: 11.5px; }
+.verdict { margin: 0; font-weight: 800; font-size: 14.5px; }

@@ -1,9 +1,9 @@
 // 合买账本 · 页面
-import { compute, stats, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw1tftg5';
-import { createStore } from './store.js?v=mw1tftg5';
-import { PUBLIC_URL } from './config.js?v=mw1tftg5';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw1tftg5';
-import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw1tftg5';
+import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw1xf99i';
+import { createStore } from './store.js?v=mw1xf99i';
+import { PUBLIC_URL } from './config.js?v=mw1xf99i';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw1xf99i';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw1xf99i';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
@@ -699,28 +699,84 @@ function updateTransfer(f) {
 }
 
 // ───────────── 战绩 ─────────────
+function curveSVG(curve) {
+  if (curve.length < 2) return '';
+  const W = 300, H = 120, padX = 6, padY = 10;
+  const vals = curve.flatMap((p) => [p.owner, p.partner]);
+  let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  if (max === min) max = min + 1;
+  const x = (i) => padX + (i * (W - padX * 2)) / (curve.length - 1);
+  const y = (v) => padY + ((max - v) / (max - min)) * (H - padY * 2);
+  const path = (k) => curve.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p[k]).toFixed(1)}`).join(' ');
+  const last = curve[curve.length - 1];
+  const n = curve.length - 1;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="累计盈亏：${esc(nameOf('owner'))} ${signed(last.owner)}，${esc(nameOf('partner'))} ${signed(last.partner)}">
+      <line class="base" x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>
+      <path d="${path('owner')}" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${path('partner')}" fill="none" stroke="var(--friend)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${x(n).toFixed(1)}" cy="${y(last.owner).toFixed(1)}" r="3.5" fill="var(--ink)"/>
+      <circle cx="${x(n).toFixed(1)}" cy="${y(last.partner).toFixed(1)}" r="3.5" fill="var(--friend)"/>
+    </svg>
+    <div class="legend2"><span><i class="dot me"></i>${esc(nameOf('owner'))} <b class="num ${tone(last.owner)}">${signed(last.owner)}</b></span>
+      <span><i class="dot fr"></i>${esc(nameOf('partner'))} <b class="num ${tone(last.partner)}">${signed(last.partner)}</b></span></div>`;
+}
+
+const pctInt = (r) => (r == null ? '—' : `${Math.round(r * 100)}%`);
+const edgeText = (e) => (e == null ? '—' : `${e > 0 ? '+' : e < 0 ? '−' : ''}${Math.abs(e).toFixed(1)} 个百分点`);
+
 function viewStats() {
   const s = stats(S.r);
-  const row = (k, f) => `<span class="k">${k}</span>${['owner', 'partner'].map((h) => f(s.per[h], h)).join('')}`;
+  const x = insights(S.r);
+  const people = ['owner', 'partner'];
+  const head = `<span></span>${people.map((h) => `<span class="hd">${av(h, 'sm')}${esc(nameOf(h))}</span>`).join('')}`;
+  const row = (k, f) => `<span class="k">${k}</span>${people.map((h) => f(h)).join('')}`;
   const settled = settledGames();
-  const maxSlip = Math.max(...s.slips.map((x) => Math.abs(x.diff)), 1);
+  const teamRow = (t) => `<div class="li"><div class="li-main"><b>${esc(t.team)}</b><span class="sub">押它赢 ${t.n} 次，中 ${t.hits} 次</span></div><span class="amt num ${tone(t.pnl)}">${signed(t.pnl)}</span></div>`;
+  const bucketCell = (b) => (b.n
+    ? `<span class="v cell"><b class="num ${tone(b.pnl)}">${signed(b.pnl)}</b><span class="sub">${b.n} 次 · 中 ${pctInt(b.rate)}</span></span>`
+    : '<span class="v cell"><span class="sub">没押过</span></span>');
+  const acc = x.accuracy;
+  let verdict = '';
+  if (acc.owner.n && acc.partner.n) {
+    const better = acc.owner.edge === acc.partner.edge ? null : acc.owner.edge > acc.partner.edge ? 'owner' : 'partner';
+    verdict = better ? `<p class="verdict">${esc(nameOf(better))}比较准，比市场多看准 ${Math.abs(acc[better].edge).toFixed(1)} 个百分点。</p>` : '';
+  }
+  const detail = x.picks.length ? `
+    <div class="sec-t">盈亏走势</div>
+    ${curveSVG(x.curve)}
+    <div class="cmp months">${head}
+      ${x.months.map((m) => `<span class="k num">${m.month.replace('-', ' 年 ').replace(/^(\d+ 年 )0?/, '$1')} 月</span>${people.map((h) => `<span class="v num ${tone(m[h])}">${signed(m[h])}</span>`).join('')}`).join('')}
+    </div>
+
+    <div class="sec-t">谁更准</div>
+    <div class="cmp">${head}
+      ${row('押中', (h) => `<span class="v num">${acc[h].n ? `${acc[h].hits}/${acc[h].n} · ${pctInt(acc[h].rate)}` : '—'}</span>`)}
+      ${row('平均买入价', (h) => `<span class="v num">${acc[h].n ? price(acc[h].avgPrice) : '—'}</span>`)}
+      ${row('比市场准', (h) => `<span class="v num ${tone(acc[h].edge || 0)}">${edgeText(acc[h].edge)}</span>`)}
+    </div>
+    ${verdict}
+    <span class="sub">买入价就是市场给的胜率：花 40¢ 买，等于市场认为有 40% 会赢。押中率比平均买入价高，说明比市场看得准。</span>
+
+    <div class="sec-t">押热门还是押冷门</div>
+    <div class="cmp buckets">${head}
+      ${BUCKETS.map((b) => `<span class="k">${b.label}<span class="sub"> ${b.range}</span></span>${people.map((h) => bucketCell(x.buckets[h][b.key])).join('')}`).join('')}
+    </div>
+
+    <div class="sec-t">球队</div>
+    ${x.best.length ? `<span class="field-l">最会给你们送钱</span><div class="list">${x.best.map(teamRow).join('')}</div>` : ''}
+    ${x.worst.length ? `<span class="field-l">最坑</span><div class="list">${x.worst.map(teamRow).join('')}</div>` : ''}
+    <span class="sub">按「押这个队赢」统计，你们俩合起来算。</span>`
+    : '<p class="empty">还没有结算过的比赛。结算之后，这里会出现盈亏走势、谁更准、押热门还是冷门、哪个队最会送钱。</p>';
   return `
     <div class="hdr"><span class="h-t">战绩</span><span class="chip-btn">全部</span></div>
-    <div class="cmp">
-      <span></span><span class="hd">${av('owner', 'sm')}${esc(nameOf('owner'))}</span><span class="hd">${av('partner', 'sm')}${esc(nameOf('partner'))}</span>
-      ${row('已结算盈亏', (p) => `<span class="v num ${tone(p.realized)}">${signed(p.realized)}</span>`)}
-      ${row('回报率', (p) => `<span class="v num ${tone(p.realized)}">${pct(p.roi)}</span>`)}
-      ${row('胜负', (p) => `<span class="v num">${p.wins}–${p.losses}</span>`)}
-      ${row('投入', (p) => `<span class="v num">${money(p.closedCost)}</span>`)}
+    <div class="cmp">${head}
+      ${row('已结算盈亏', (h) => `<span class="v num ${tone(s.per[h].realized)}">${signed(s.per[h].realized)}</span>`)}
+      ${row('回报率', (h) => `<span class="v num ${tone(s.per[h].realized)}">${pct(s.per[h].roi)}</span>`)}
+      ${row('胜负', (h) => `<span class="v num">${s.per[h].wins}–${s.per[h].losses}</span>`)}
+      ${row('投入', (h) => `<span class="v num">${money(s.per[h].closedCost)}</span>`)}
     </div>
     <span class="sub">只算已经结算或卖出的部分。投入 = 这些单的成本（含手续费）。</span>
-    ${s.slips.length ? `
-      <div class="sec-t">跟单晚买的代价</div>
-      <div class="slip">
-        <span class="big2 num">${s.slipAvg >= 0 ? '+' : '−'}${price(Math.abs(s.slipAvg))}<span class="sub"> /张</span></span>
-        <span class="sub">${esc(fullName('partner'))}平均比${esc(fullName('owner'))}${s.slipAvg >= 0 ? '贵' : '便宜'}，${s.slips.length} 次共${s.slipExtra >= 0 ? '多花' : '少花'} ${money(Math.abs(s.slipExtra))}</span>
-        <div class="bars">${s.slips.map((x) => `<div class="bar-row"><span>${esc(sideName(x.game, x.side).replace(/赢$/, ''))}</span><span class="bar"><i style="width:${Math.round((Math.abs(x.diff) / maxSlip) * 100)}%" class="${x.diff < 0 ? 'neg' : ''}"></i></span><span class="num">${x.diff < 0 ? '−' : ''}${price(Math.abs(x.diff))}</span></div>`).join('')}</div>
-      </div>` : ''}
+    ${detail}
     <div class="sec-t">比赛</div>
     ${settled.length ? `<div class="list">${settled.map(gameRow).join('')}</div>` : '<p class="empty">还没有结算过的比赛。</p>'}`;
 }

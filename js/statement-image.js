@@ -1,6 +1,6 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
-import { money, signed, price, dt, full, day, qty } from './format.js?v=mw1tftg5';
-import { avgFillPrice } from './ledger.js?v=mw1tftg5';
+import { money, signed, price, dt, full, day, qty } from './format.js?v=mw1xf99i';
+import { avgFillPrice } from './ledger.js?v=mw1xf99i';
 
 const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
 const title = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '');

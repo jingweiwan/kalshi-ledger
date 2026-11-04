@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compute, stats, statement, estimateFee, toCSV, needsConfirm, notional, avgFillPrice, fillAmount } from '../js/ledger.js';
+import { compute, stats, statement, estimateFee, toCSV, needsConfirm, notional, avgFillPrice, fillAmount, insights } from '../js/ledger.js';
 import { sampleData } from '../js/sample.js';
 
 test('手续费估算和设计图一致', () => {
@@ -193,4 +193,44 @@ test('小数张：34.91 张按百分之一张算，赢了正好回 $34.91', () =
   assert.equal(r.balance, 5000 - 2998 + 941 + 2441);
   assert.equal(r.transfersIn - r.transfersOut + r.realized.partner - r.openBasis.partner, r.balance);
   assert.equal(estimateFee(34.91, 85), Math.ceil(7 * 3491 * 85 * 15 / 1000000));
+});
+
+test('更细的战绩：押中率、比市场准多少、热门冷门、球队、每月和累计曲线', () => {
+  const { events, games } = sampleData();
+  const r = compute(events, games);
+  const x = insights(r, { monthOf: (iso) => iso.slice(0, 7) });
+  // 两场已结算，每人每场押一边
+  assert.equal(x.picks.length, 4);
+  assert.equal(x.accuracy.owner.n, 2);
+  assert.equal(x.accuracy.owner.hits, 1);
+  assert.equal(x.accuracy.owner.avgPrice, 37.5);      // (40 + 35) / 2
+  assert.equal(x.accuracy.owner.edge, 12.5);          // 50% − 37.5%
+  assert.equal(x.accuracy.partner.edge, 50 - 41.5);   // (45 + 38) / 2
+  // 40¢、45¢ 算五五开；35¢、38¢ 算冷门
+  assert.equal(x.buckets.owner.even.n, 1);
+  assert.equal(x.buckets.owner.even.pnl, 5832);
+  assert.equal(x.buckets.owner.dog.pnl, -2196);
+  assert.equal(x.buckets.partner.fav.n, 0);
+  // 球队：押湖人赢两人合计 +84.95，押尼克斯赢合计 −37.82
+  assert.deepEqual(x.best.map((t) => [t.team, t.pnl, t.n, t.hits]), [['湖人', 5832 + 2663, 2, 2]]);
+  assert.deepEqual(x.worst.map((t) => [t.team, t.pnl, t.n, t.hits]), [['尼克斯', -2196 - 1586, 2, 0]]);
+  // 每月（示例都在 11 月）和累计曲线
+  assert.deepEqual(x.months, [{ month: '2026-11', owner: 3636, partner: 1077 }]);
+  const last = x.curve[x.curve.length - 1];
+  assert.deepEqual([last.owner, last.partner], [3636, 1077]);
+  // 每一边的盈亏加起来等于总盈亏
+  assert.equal(x.picks.filter((p) => p.holder === 'owner').reduce((t, p) => t + p.pnl, 0), r.realized.owner);
+});
+
+test('提前卖出的盈亏也进曲线，算在卖出的那一边', () => {
+  const { events, games } = sampleData();
+  const sell = { id: 10, kind: 'fill', occurred_at: '2026-11-03T20:00:00-08:00', game_id: 'g3', holder: 'partner', action: 'sell', side: 'a', contracts: 10, price_cents: 70, fee_cents: 15 };
+  const settle = { id: 11, kind: 'settle', occurred_at: '2026-11-03T23:00:00-08:00', game_id: 'g3', winner: 'b' };
+  const r = compute([...events, sell, settle], games);
+  const x = insights(r, { monthOf: (iso) => iso.slice(0, 7) });
+  const p = x.picks.find((q) => q.holder === 'partner' && q.gameId === 'g3');
+  assert.equal(p.hit, false);
+  // 卖 10 张赚 58，剩下 20 张输掉成本 1253
+  assert.equal(p.pnl, 58 - 1253);
+  assert.equal(x.curve.length, 1 + r.realizedLog.length);
 });
