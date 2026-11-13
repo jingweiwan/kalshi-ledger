@@ -35,9 +35,12 @@ test('/sb/ 开头的请求原样转给 Supabase，去掉 /sb', async () => {
 
 test('读账本的 GET 请求带着查询参数转发', async () => {
   mockFetch(() => new Response('[]', { status: 200 }));
-  await worker.fetch(new Request('https://ledger.example.com/sb/rest/v1/events?select=*&ledger_id=eq.L1&order=id.asc'));
+  await worker.fetch(new Request('https://ledger.example.com/sb/rest/v1/events?select=*&ledger_id=eq.L1&order=id.asc', {
+    headers: { 'x-client-info': 'kalshi-ledger/2' },
+  }));
   assert.equal(calls[0].url, 'https://ofjchymwuwqbinbgczys.supabase.co/rest/v1/events?select=*&ledger_id=eq.L1&order=id.asc');
   assert.equal(calls[0].body, null);
+  assert.equal(calls[0].headers.get('x-client-info'), 'kalshi-ledger/2');
 });
 
 test('其他路径转给 GitHub Pages，首页补上 index.html 并且不缓存', async () => {
