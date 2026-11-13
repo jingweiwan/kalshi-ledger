@@ -1,9 +1,6 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
-import { money, signed, price, dt, full, day, qty } from './format.js?v=mw1xf99i';
-import { avgFillPrice } from './ledger.js?v=mw1xf99i';
-
-const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
-const title = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '');
+import { money, signed, price, dt, full, day, qty } from './format.js?v=mwemrsas';
+import { avgFillPrice, gameTitle as title, sideName, settlementLabel } from './ledger.js?v=mwemrsas';
 
 function describe(e, gameById) {
   const g = e.game_id ? gameById.get(e.game_id) : null;
@@ -20,7 +17,7 @@ function describe(e, gameById) {
     };
   }
   if (e.kind === 'settle') {
-    return { label: `结算 ${sideName(g, e.winner)}`, sub: `${title(g)} · ${dt(e.occurred_at)}` };
+    return { label: `结算 ${settlementLabel(g, e)}`, sub: `${title(g)} · ${dt(e.occurred_at)}` };
   }
   return { label: `撤销 #${e.voids}`, sub: [e.note, dt(e.occurred_at)].filter(Boolean).join(' · ') };
 }
@@ -84,11 +81,19 @@ const C = {
 const FONT = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Zen Hei", sans-serif';
 const font = (w, s) => `${w} ${s}px ${FONT}`;
 
-function fit(ctx, text, maxW) {
-  if (ctx.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
-  return t + '…';
+function wrap(ctx, text, maxW) {
+  const lines = [];
+  let line = '';
+  for (const ch of text) {
+    if (line && ctx.measureText(line + ch).width > maxW) {
+      const at = line.lastIndexOf(' ');
+      if (at > 0) { lines.push(line.slice(0, at)); line = line.slice(at + 1); }
+      else { lines.push(line); line = ''; }
+    }
+    line += ch;
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 /** 画成 750 像素宽的图片（手机上 2 倍清晰度） */
@@ -106,10 +111,17 @@ export function drawStatement(m) {
     const rowLR = (left, sub, right, rightColor, bold) => {
       ctx.font = font(bold ? 800 : 700, 27);
       const rw = right ? ctx.measureText(right).width : 0;
-      text(fit(ctx, left, IW - rw - 24), P, y + 34, font(bold ? 800 : 700, 27), C.ink);
+      const labels = wrap(ctx, left, IW - rw - 24);
+      labels.forEach((s, i) => text(s, P, y + 34 + i * 36, font(bold ? 800 : 700, 27), C.ink));
       if (right) text(right, W - P, y + 34, font(800, 27), rightColor || C.ink, 'right');
-      if (sub) { ctx.font = font(600, 22); text(fit(ctx, sub, IW), P, y + 66, font(600, 22), C.sub); }
-      y += sub ? 86 : 56;
+      y += Math.max(1, labels.length) * 36;
+      if (sub) {
+        ctx.font = font(600, 22);
+        const lines = wrap(ctx, sub, IW);
+        lines.forEach((s, i) => text(s, P, y + 30 + i * 30, font(600, 22), C.sub));
+        y += lines.length * 30 + 12;
+      }
+      y += 20;
     };
     const section = (s) => { y += 18; text(s, P, y + 32, font(800, 30), C.ink); y += 50; };
 

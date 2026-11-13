@@ -1,7 +1,7 @@
 // 数据存取：Supabase（正式）或内存（示例模式），两者接口一样。
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mw1xf99i';
-import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mw1xf99i';
-import { compute } from './ledger.js?v=mw1xf99i';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mwemrsas';
+import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mwemrsas';
+import { compute } from './ledger.js?v=mwemrsas';
 
 export function createStore() {
   const wantsDemo = new URLSearchParams(location.search).has('demo');
@@ -37,6 +37,7 @@ function unwrap({ data, error }) {
 function supabaseStore() {
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    global: { headers: { 'x-client-info': 'kalshi-ledger/2' } },
   });
   const pageAll = async (query) => {
     const out = [];
@@ -191,7 +192,7 @@ function demoStore(notConfigured) {
       if (!k || k.status === 'assigned') throw new Error('这笔已经分配过了');
       let g = d.games.find((x) => x.kalshi_event_ticker === k.event_ticker);
       if (!g) {
-        g = { id: `g${nextGame++}`, ledger_id: d.ledger.id, league: 'NBA', team_a: k.team_a, team_b: k.team_b, starts_at: k.starts_at, created_at: now(), kalshi_event_ticker: k.event_ticker };
+        g = { id: `g${nextGame++}`, ledger_id: d.ledger.id, league: k.market_kind === 'combo' ? 'Combo' : 'NBA', market_kind: k.market_kind, title: k.title, legs: k.legs, team_a: k.team_a, team_b: k.team_b, starts_at: k.starts_at, created_at: now(), kalshi_event_ticker: k.event_ticker };
         d.games.push(g);
       }
       const e = await this.addEvent({ kind: 'fill', game_id: g.id, holder, action: k.action, side: k.side, contracts: k.contracts, price_cents: k.price_cents, notional_cents: k.notional_cents, fee_cents: k.fee_cents, occurred_at: k.occurred_at, kalshi_fill_id: k.id });

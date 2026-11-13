@@ -1,9 +1,9 @@
 // 合买账本 · 页面
-import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES } from './ledger.js?v=mw1xf99i';
-import { createStore } from './store.js?v=mw1xf99i';
-import { PUBLIC_URL } from './config.js?v=mw1xf99i';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mw1xf99i';
-import { statementModel, statementText, drawStatement } from './statement-image.js?v=mw1xf99i';
+import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES, gameTitle, sideName, settlementLabel } from './ledger.js?v=mwemrsas';
+import { createStore } from './store.js?v=mwemrsas';
+import { PUBLIC_URL } from './config.js?v=mwemrsas';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mwemrsas';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mwemrsas';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
@@ -36,8 +36,6 @@ const fullName = (h) => (h === 'owner' ? L().owner_name : L().partner_name || '�
 const nameOf = (h) => (h === S.role ? '我' : fullName(h));
 const initial = (h) => (h === S.role ? '我' : [...fullName(h)][0] || '?');
 const av = (h, cls = '') => `<i class="av ${h === 'owner' ? 'me' : 'fr'} ${cls}">${esc(initial(h))}</i>`;
-const gameTitle = (g) => (g ? `${g.team_a} vs ${g.team_b}` : '已删除的比赛');
-const sideName = (g, s) => (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
 const isOwner = () => S.role === 'owner';
 
 // ───────────── 汇率 ─────────────
@@ -279,7 +277,7 @@ function gameRow(g) {
     .map((h) => `<span class="${tone(g.holders[h].realized)}">${esc(nameOf(h))} ${signed(g.holders[h].realized)}</span>`)
     .join('');
   const won = g.holders.owner.realized > 0 || g.holders.partner.realized > 0;
-  return `<a class="li" href="#/game/${esc(g.id)}"><span class="ic-c ${won ? 'ok' : 'no'}">${won ? '✓' : '✗'}</span><div class="li-main"><b>${esc(sideName(g.game, g.settled.winner))}</b><span class="sub">${esc(gameTitle(g.game))} · ${day(g.settled.at)}</span></div><span class="amt2 num">${lines}</span></a>`;
+  return `<a class="li" href="#/game/${esc(g.id)}"><span class="ic-c ${won ? 'ok' : 'no'}">${won ? '✓' : '✗'}</span><div class="li-main"><b>${esc(settlementLabel(g.game, g.settled))}</b><span class="sub">${esc(gameTitle(g.game))} · ${day(g.settled.at)}</span></div><span class="amt2 num">${lines}</span></a>`;
 }
 
 function describe(e) {
@@ -291,7 +289,7 @@ function describe(e) {
   if (e.kind === 'fill') {
     return { title: `${nameOf(e.holder)}${e.action === 'buy' ? '买入' : '卖出'} ${sideName(g, e.side)} ${qty(e.contracts)}张`, sub: `@${price(avgFillPrice(e))} · ${gameTitle(g)}` };
   }
-  if (e.kind === 'settle') return { title: `结算 ${sideName(g, e.winner)}`, sub: gameTitle(g) };
+  if (e.kind === 'settle') return { title: `结算 ${settlementLabel(g, e)}`, sub: gameTitle(g) };
   const t = S.eventById.get(e.voids);
   return { title: `撤销 #${e.voids}`, sub: [t ? describe(t).title : '', e.note].filter(Boolean).join(' · ') };
 }
@@ -329,9 +327,9 @@ function kalshiGroups(status = 'pending') {
   const groups = new Map();
   for (const k of S.data.kalshi || []) {
     if (k.status !== status) continue;
-    const key = `${k.order_id || k.id}|${k.side}|${k.action}`;
+    const key = `${k.event_ticker}|${k.order_id || k.id}|${k.side}|${k.action}`;
     if (!groups.has(key)) {
-      groups.set(key, { key, ids: [], team_a: k.team_a, team_b: k.team_b, side: k.side, action: k.action, units: 0, notional: 0, fee: 0, at: k.occurred_at });
+      groups.set(key, { key, ids: [], team_a: k.team_a, team_b: k.team_b, market_kind: k.market_kind, title: k.title, legs: k.legs, side: k.side, action: k.action, units: 0, notional: 0, fee: 0, at: k.occurred_at });
     }
     const g = groups.get(key);
     g.ids.push(k.id);
@@ -347,7 +345,6 @@ function kalshiRow(g, { buttons = true, restore = false } = {}) {
   const c = g.units / 100;
   const amount = g.action === 'buy' ? -(g.notional + g.fee) : g.notional - g.fee;
   const ids = esc(g.ids.join(','));
-  const team = g.side === 'a' ? g.team_a : g.team_b;
   let btns = '';
   if (buttons && isOwner()) {
     btns = restore
@@ -358,8 +355,8 @@ function kalshiRow(g, { buttons = true, restore = false } = {}) {
           <button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="1">忽略</button></div>`;
   }
   return `<div class="kx">
-    <div class="kx-h"><div class="li-main"><b>${g.action === 'buy' ? '买入' : '卖出'} ${esc(team)}赢 ${qty(c)}张 @${price(g.notional / c)}</b>
-      <span class="sub">${esc(g.team_a)} vs ${esc(g.team_b)} · ${dt(g.at)} · 手续费 ${money(g.fee)}${g.ids.length > 1 ? ` · ${g.ids.length} 笔成交` : ''}</span></div>
+    <div class="kx-h"><div class="li-main"><b>${g.action === 'buy' ? '买入' : '卖出'} ${esc(sideName(g, g.side))} ${qty(c)}张 @${price(g.notional / c)}</b>
+      <span class="sub">${esc(gameTitle(g))} · ${dt(g.at)} · 手续费 ${money(g.fee)}${g.ids.length > 1 ? ` · ${g.ids.length} 笔成交` : ''}</span></div>
       <span class="amt num">${signed(amount)}</span></div>${btns}</div>`;
 }
 
@@ -460,15 +457,16 @@ function viewGame() {
     <div class="nav"><a class="x" href="#/games" aria-label="返回">‹</a>
       <div class="nav-t"><b>${esc(gameTitle(G))}</b><span class="sub">${esc(G.league || 'NBA')}${G.starts_at ? ' · ' + esc(when(G.starts_at)) : ''}</span></div>
       <span class="done r">${g.settled ? '已结算' : '进行中'}</span></div>
-    ${g.settled ? `<div class="outcome"><span class="ok-big">✓</span><div><div class="big2">${esc(sideName(G, g.settled.winner))}</div><div class="sub">${dt(g.settled.at)} 结算 · 每张回 $1.00</div></div></div>` : ''}
+    ${G.market_kind === 'combo' ? `<div class="sec-t">串关内容</div><div class="list">${(G.legs || []).map((l, i) => `<div class="li"><div class="li-main"><b>${i + 1}. ${esc(l.label)}</b><span class="sub">${esc(l.market_ticker)} · ${esc(l.side.toUpperCase())}</span></div></div>`).join('')}</div>` : ''}
+    ${g.settled ? `<div class="outcome"><span class="ok-big">✓</span><div><div class="big2">${esc(settlementLabel(G, g.settled))}</div><div class="sub">${dt(g.settled.at)} 结算${g.settled.winner ? ' · 命中侧每张回 $1.00' : ''}</div></div></div>` : ''}
     <div class="sec-t">仓位</div>
     ${holders.length ? holders.map((h) => posCard(g, h)).join('') : '<p class="empty">这场还没有单。</p>'}
     ${g.holders.partner.bought ? `<div class="kv"><span class="sub">${esc(isOwner() ? fullName('partner') : '我')}这场的余额变化</span><span class="num ${tone(partnerNet)}">${signed(partnerNet)}</span></div>` : ''}
     ${isOwner() && !g.settled ? `
-      <div class="sec-t">比赛结果</div>
+      ${G.market_kind === 'combo' ? '<p class="sub">串关按 Kalshi 官方实际赔付自动结算。</p>' : `<div class="sec-t">比赛结果</div>
       <div class="yn"><button type="button" class="yn-b yes" data-act="settle" data-game="${esc(g.id)}" data-side="a">${esc(sideName(G, 'a'))}</button>
         <button type="button" class="yn-b no" data-act="settle" data-game="${esc(g.id)}" data-side="b">${esc(sideName(G, 'b'))}</button></div>
-      <span class="sub center">点结果，这场 ${qty(openCount)} 张单一起结算</span>
+      <span class="sub center">点结果，这场 ${qty(openCount)} 张单一起结算</span>`}
       <div class="btns"><a class="cta ghost" href="#/fill?game=${encodeURIComponent(g.id)}">再记一笔</a><a class="cta ghost" href="#/fill?game=${encodeURIComponent(g.id)}&action=sell">提前卖出</a></div>` : ''}
     <div class="sec-t">这场的记录</div>
     ${evs.length ? `<div class="list">${evs.map(eventRow).join('')}</div>` : '<p class="empty">没有记录。</p>'}`;
@@ -606,8 +604,9 @@ function updateFill(f) {
   if (!f) return;
   const v = readFill(f);
   f.querySelector('#f-newgame').hidden = v.game !== 'new';
-  f.querySelector('#f-side-a').textContent = `${v.teamA || 'A'}赢`;
-  f.querySelector('#f-side-b').textContent = `${v.teamB || 'B'}赢`;
+  const game = v.st?.game || { team_a: v.teamA || 'A', team_b: v.teamB || 'B' };
+  f.querySelector('#f-side-a').textContent = sideName(game, 'a');
+  f.querySelector('#f-side-b').textContent = sideName(game, 'b');
   f.querySelector('#f-side-l').textContent = v.action === 'sell' ? '卖哪边' : '买哪边';
   const amountMode = v.mode === 'amount', buy = v.action === 'buy';
   f.querySelector('#row-contracts').hidden = amountMode && buy;
@@ -643,7 +642,7 @@ function updateFill(f) {
       }
     }
     sum.innerHTML = `${derived}<div class="tk sum"><span class="sub">成本 ${esc(feeTxt)}</span><b class="num">${money(cost)}</b></div>
-      <div class="tk sum"><span class="sub">${esc(v.side === 'a' ? v.teamA || 'A' : v.teamB || 'B')}赢的话回款</span><b class="num up">${money(win)} <span class="sub up">${signed(win - cost)}</span></b></div>${note}`;
+      <div class="tk sum"><span class="sub">${esc(sideName(game, v.side))}的话回款</span><b class="num up">${money(win)} <span class="sub up">${signed(win - cost)}</span></b></div>${note}`;
   } else {
     const proceeds = v.notional - v.fee;
     const pos = v.st ? v.st.holders[v.holder].sides[v.side] : null;
@@ -741,7 +740,7 @@ function viewStats() {
     const better = acc.owner.edge === acc.partner.edge ? null : acc.owner.edge > acc.partner.edge ? 'owner' : 'partner';
     verdict = better ? `<p class="verdict">${esc(nameOf(better))}比较准，比市场多看准 ${Math.abs(acc[better].edge).toFixed(1)} 个百分点。</p>` : '';
   }
-  const detail = x.picks.length ? `
+  const detail = x.months.length ? `
     <div class="sec-t">盈亏走势</div>
     ${curveSVG(x.curve)}
     <div class="cmp months">${head}
@@ -808,7 +807,7 @@ function openEvent(id) {
       [e.action === 'buy' ? '成本' : '回款', money(fillAmount(e))]);
   }
   if (e.kind === 'transfer') rows.push(['金额', money(e.amount_cents)], ['方式', e.method || '—']);
-  if (e.kind === 'settle') rows.push(['比赛', gameTitle(g)], ['结果', sideName(g, e.winner)]);
+  if (e.kind === 'settle') rows.push(['比赛', gameTitle(g)], ['结果', settlementLabel(g, e)]);
   if (eff && eff.involvesPartner) rows.push([`${isOwner() ? fullName('partner') : '我'}的余额`, `${signed(eff.partnerDelta)} → ${money(eff.balanceAfter)}`]);
   if (e.note) rows.push(['备注', e.note]);
   if (needsConfirm(e)) rows.push(['确认', e.confirmed_at ? `${full(e.confirmed_at)}${e.confirmed_via === 'wechat' ? ' · 微信' + (e.statement_no ? ' 对账单 #' + e.statement_no : '') : ' · App'}` : '待确认']);
@@ -924,7 +923,7 @@ function kalshiSettings() {
   const status = ks
     ? `<div class="kv"><span class="sub">状态</span><b>${ks.last_run_at ? `${dt(ks.last_run_at)} 同步，新导入 ${ks.last_imported ?? 0} 条` : '已设置，还没同步过'}</b></div>
        <div class="kv"><span class="sub">从这天的成交开始导入</span><b class="num">${esc(ks.since)}</b></div>`
-    : '<p class="sub">每小时自动把 Kalshi 上 NBA 比赛输赢的成交拉进「待分配」，你只需要点「我的」或「朋友的」。比赛出结果后自动结算。</p>';
+    : '<p class="sub">每小时自动把 Kalshi 上 NBA 单场胜负和所有 Combo 串关的成交拉进「待分配」，你只需要点「我的」或「朋友的」。按官方结果和实际赔付自动结算。</p>';
   const token = S.kxToken ? `<div class="token-box">
       <b>同步令牌（只显示这一次，关掉就看不到了）</b>
       <code class="tok">${esc(S.kxToken)}</code>

@@ -93,6 +93,16 @@ alter table public.games add column if not exists kalshi_event_ticker text;
 create unique index if not exists games_kalshi_event_uidx on public.games (ledger_id, kalshi_event_ticker)
   where kalshi_event_ticker is not null;
 
+-- Combo 按 market ticker 存入 kalshi_event_ticker，不能和同 event 的其他串关合并。
+alter table public.games add column if not exists market_kind text not null default 'game' check (market_kind in ('game', 'combo'));
+alter table public.games add column if not exists title text;
+alter table public.games add column if not exists legs jsonb not null default '[]'::jsonb;
+-- 非二元赔付（例如部分比赛取消）保存 a 侧每张的百万分之一美元；b 侧为其补数。
+alter table public.events add column if not exists a_payout_micros integer check (a_payout_micros between 0 and 1000000);
+alter table public.events drop constraint if exists settle_fields;
+alter table public.events add constraint settle_fields check (kind <> 'settle' or
+  (game_id is not null and (winner is not null or a_payout_micros is not null)));
+
 create table if not exists public.statements (
   id bigint generated always as identity primary key,
   ledger_id uuid not null references public.ledgers(id) on delete cascade,
@@ -117,7 +127,7 @@ create table if not exists public.fx_rates (
 );
 
 -- ───────────── Kalshi 同步 ─────────────
--- 同步程序（GitHub Actions，每小时一次）把 Kalshi 账户里的 NBA 比赛成交写进 kalshi_fills（待分配），
+-- 同步程序（GitHub Actions，每小时一次）把 NBA 单场胜负和所有 Combo 成交写进 kalshi_fills（待分配），
 -- 持有人在账本里点「我的 / 朋友的」后变成正式记录。同步程序只拿一个「同步令牌」，
 -- 只能调用 kalshi_sync_info / kalshi_ingest 两个函数，别的数据碰不到。
 
@@ -154,6 +164,9 @@ create table if not exists public.kalshi_fills (
 );
 
 alter table public.kalshi_fills add column if not exists order_id text;
+alter table public.kalshi_fills add column if not exists market_kind text not null default 'game' check (market_kind in ('game', 'combo'));
+alter table public.kalshi_fills add column if not exists title text;
+alter table public.kalshi_fills add column if not exists legs jsonb not null default '[]'::jsonb;
 
 create table if not exists public.kalshi_results (
   ledger_id uuid not null references public.ledgers(id) on delete cascade,
@@ -162,15 +175,34 @@ create table if not exists public.kalshi_results (
   decided_at timestamptz not null default now(),
   primary key (ledger_id, event_ticker)
 );
+alter table public.kalshi_results alter column winner drop not null;
+alter table public.kalshi_results add column if not exists a_payout_micros integer check (a_payout_micros between 0 and 1000000);
+alter table public.kalshi_results drop constraint if exists result_fields;
+alter table public.kalshi_results add constraint result_fields check (winner is not null or a_payout_micros is not null);
 
 -- ───────────── 辅助函数 ─────────────
 
+-- 旧页面不认识非二元赔付，必须拒绝它读取新账和继续记账，刷新后使用新版。
+-- 使用 Supabase 已支持的请求头；这只是兼容检查，身份和权限仍由 auth.uid / RLS 决定。
+create or replace function public.require_ledger_client() returns boolean
+language plpgsql stable set search_path = public as $$
+begin
+  if coalesce(coalesce(nullif(current_setting('request.headers', true), ''), '{}')::jsonb ->> 'x-client-info', '')
+      !~ '(^|,)[[:space:]]*kalshi-ledger/2[[:space:]]*(,|$)' then
+    raise exception '账本已升级，请刷新页面后重试';
+  end if;
+  return true;
+end $$;
+
 -- 当前登录的人在这个账本里是什么身份：'owner' / 'partner' / null
 create or replace function public.ledger_role(p_ledger uuid) returns text
-language sql stable security definer set search_path = public as $$
-  select case when owner_id = auth.uid() then 'owner'
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_ledger_client();
+  return (select case when owner_id = auth.uid() then 'owner'
               when partner_id = auth.uid() then 'partner' end
-  from public.ledgers where id = p_ledger
+  from public.ledgers where id = p_ledger);
+end;
 $$;
 
 -- 新记录的检查：撤销只能撤本账本的、没撤过的记录；结算过的比赛不能再记成交或结算
@@ -323,8 +355,8 @@ begin
     return false;
   end if;
   select owner_id into owner from public.ledgers where id = p_ledger;
-  insert into public.events (ledger_id, kind, game_id, winner, occurred_at, created_by, note)
-  values (p_ledger, 'settle', g.id, res.winner, res.decided_at, owner, 'Kalshi 自动结算');
+  insert into public.events (ledger_id, kind, game_id, winner, a_payout_micros, occurred_at, created_by, note)
+  values (p_ledger, 'settle', g.id, res.winner, res.a_payout_micros, res.decided_at, owner, 'Kalshi 自动结算');
   return true;
 end $$;
 
@@ -374,18 +406,19 @@ declare
 begin
   if l is null then raise exception '同步令牌不对'; end if;
   insert into public.kalshi_fills (ledger_id, id, order_id, event_ticker, market_ticker, team_a, team_b, starts_at, side, action,
-    contracts, price_cents, notional_cents, fee_cents, fee_dollars, occurred_at)
+    contracts, price_cents, notional_cents, fee_cents, fee_dollars, occurred_at, market_kind, title, legs)
   select l, x.id, x.order_id, x.event_ticker, x.market_ticker, left(x.team_a, 20), left(x.team_b, 20), x.starts_at, x.side, x.action,
-    x.contracts, x.price_cents, x.notional_cents, x.fee_cents, x.fee_dollars, x.occurred_at
+    x.contracts, x.price_cents, x.notional_cents, x.fee_cents, x.fee_dollars, x.occurred_at,
+    coalesce(x.market_kind, 'game'), x.title, coalesce(x.legs, '[]'::jsonb)
   from jsonb_to_recordset(coalesce(p_fills, '[]'::jsonb)) as x(id text, order_id text, event_ticker text, market_ticker text, team_a text,
     team_b text, starts_at timestamptz, side text, action text, contracts numeric, price_cents integer,
-    notional_cents integer, fee_cents integer, fee_dollars text, occurred_at timestamptz)
+    notional_cents integer, fee_cents integer, fee_dollars text, occurred_at timestamptz, market_kind text, title text, legs jsonb)
   on conflict (ledger_id, id) do nothing;
   get diagnostics n_fills = row_count;
 
-  insert into public.kalshi_results (ledger_id, event_ticker, winner, decided_at)
-  select l, x.event_ticker, x.winner, coalesce(x.decided_at, now())
-  from jsonb_to_recordset(coalesce(p_results, '[]'::jsonb)) as x(event_ticker text, winner text, decided_at timestamptz)
+  insert into public.kalshi_results (ledger_id, event_ticker, winner, a_payout_micros, decided_at)
+  select l, x.event_ticker, x.winner, x.a_payout_micros, coalesce(x.decided_at, now())
+  from jsonb_to_recordset(coalesce(p_results, '[]'::jsonb)) as x(event_ticker text, winner text, a_payout_micros integer, decided_at timestamptz)
   on conflict (ledger_id, event_ticker) do nothing;
 
   for r in select event_ticker from public.kalshi_results where ledger_id = l loop
@@ -437,8 +470,9 @@ begin
   select owner_id into owner from public.ledgers where id = p_ledger;
   select * into g from public.games where ledger_id = p_ledger and kalshi_event_ticker = f.event_ticker;
   if g.id is null then
-    insert into public.games (ledger_id, team_a, team_b, starts_at, created_by, kalshi_event_ticker)
-    values (p_ledger, f.team_a, f.team_b, f.starts_at, owner, f.event_ticker)
+    insert into public.games (ledger_id, team_a, team_b, starts_at, created_by, kalshi_event_ticker, league, market_kind, title, legs)
+    values (p_ledger, f.team_a, f.team_b, f.starts_at, owner, f.event_ticker,
+      case when f.market_kind = 'combo' then 'Combo' else 'NBA' end, f.market_kind, f.title, f.legs)
     returning * into g;
   end if;
   insert into public.events (ledger_id, kind, game_id, holder, action, side, contracts, price_cents, notional_cents,
@@ -475,7 +509,7 @@ alter table public.statements enable row level security;
 
 drop policy if exists ledgers_read on public.ledgers;
 create policy ledgers_read on public.ledgers for select to authenticated
-  using (auth.uid() in (owner_id, partner_id));
+  using (public.require_ledger_client() and auth.uid() in (owner_id, partner_id));
 
 drop policy if exists games_read on public.games;
 create policy games_read on public.games for select to authenticated
@@ -516,6 +550,9 @@ revoke all on public.ledgers, public.games, public.events, public.statements,
 grant select on public.ledgers, public.statements to authenticated;
 grant select, insert on public.games, public.events to authenticated;
 grant select on public.kalshi_fills, public.kalshi_results, public.fx_rates to authenticated;
+
+revoke all on function public.require_ledger_client() from public, anon;
+grant execute on function public.require_ledger_client() to authenticated;
 
 revoke all on function public.ledger_role(uuid), public.create_ledger(text), public.join_ledger(text, text),
   public.confirm_events(uuid, bigint), public.create_statement(uuid, integer, bigint),

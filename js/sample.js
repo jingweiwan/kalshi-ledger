@@ -50,6 +50,12 @@ export function sampleData() {
     kf('demo-k1', { order_id: 'demo-o1', side: 'a', action: 'buy', contracts: 34.91, price_cents: 52, notional_cents: 1815, fee_cents: 61, occurred_at: '2026-11-04T18:47:09-08:00' }),
     kf('demo-k2', { order_id: 'demo-o1', side: 'a', action: 'buy', contracts: 20, price_cents: 55, notional_cents: 1100, fee_cents: 35, occurred_at: '2026-11-04T18:47:10-08:00' }),
     kf('demo-k3', { order_id: 'demo-o2', market_ticker: 'KXNBAGAME-26NOV04GSWHOU-HOU', side: 'b', action: 'buy', contracts: 5, price_cents: 48, notional_cents: 240, fee_cents: 9, occurred_at: '2026-11-04T19:30:00-08:00' }),
+    kf('demo-combo', { order_id: 'demo-combo-order', event_ticker: 'KXMVE-DEMO-COMBO', market_ticker: 'KXMVE-DEMO-COMBO',
+      market_kind: 'combo', team_a: 'YES', team_b: 'NO', title: '勇士赢 ＋ Lakers vs Suns · Total points over 220.5 · YES',
+      legs: [
+        { event_ticker: 'KXNBAGAME-26NOV04GSWHOU', market_ticker: 'KXNBAGAME-26NOV04GSWHOU-GSW', side: 'yes', label: '勇士赢' },
+        { event_ticker: 'DEMO-TOTAL', market_ticker: 'DEMO-TOTAL-220', side: 'yes', label: 'Lakers vs Suns · Total points over 220.5 · YES' },
+      ], side: 'a', action: 'buy', contracts: 10, price_cents: 32, notional_cents: 320, fee_cents: 12, occurred_at: '2026-11-04T19:40:00-08:00' }),
   ];
   const kalshiSync = { since: '2026-11-01', last_run_at: '2026-11-04T19:15:00-08:00', last_imported: 2, last_message: null };
   const fx = { pair: 'USDCNY', rate: 6.684, source: 'open.er-api.com', updated_at: '2026-11-04T08:07:00+08:00' };

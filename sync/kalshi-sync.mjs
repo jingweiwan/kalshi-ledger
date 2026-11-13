@@ -9,12 +9,12 @@
 // 运行日志是公开的，所以这里只打印条数，不打印任何交易内容。
 
 import crypto from 'node:crypto';
-import { mapFills, resultOf, SERIES } from './kalshi-map.mjs';
+import { mapFills, resultOf, comboResult, isCombo, SERIES } from './kalshi-map.mjs';
 
 const KALSHI = process.env.KALSHI_BASE || 'https://api.elections.kalshi.com';
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ofjchymwuwqbinbgczys.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_RoHUK-K1TdEbz0XVnIly9Q_5LKXHduK';
-const LOOKBACK_DAYS = 7; // 往前多拉几天，用来算清每个市场的净仓位
+const LOOKBACK_DAYS = 7; // 保持已导入 NBA 单场的净仓位换算口径
 
 function need(name) {
   const v = process.env[name];
@@ -46,7 +46,10 @@ export function kalshiClient(keyId, key) {
         headers: { 'KALSHI-ACCESS-KEY': keyId, 'KALSHI-ACCESS-TIMESTAMP': ts, 'KALSHI-ACCESS-SIGNATURE': sign(ts + 'GET' + full) },
       });
       if (res.status === 429 && attempt < 3) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
-      if (!res.ok) throw new Error(`Kalshi ${path} 返回 ${res.status}${res.status === 401 ? '（Key ID 或私钥不对）' : ''}`);
+      if (!res.ok) {
+        const endpoint = path.replace(/\/(historical\/)?markets\/.+$/, '/$1markets/{ticker}');
+        throw Object.assign(new Error(`Kalshi ${endpoint} 返回 ${res.status}${res.status === 401 ? '（Key ID 或私钥不对）' : ''}`), { status: res.status });
+      }
       return res.json();
     }
   };
@@ -87,27 +90,70 @@ export async function run({ get, call, log = console.log, token, rate = fetchRat
   const info = await call('kalshi_sync_info', { p_token: token });
   // 起始日期按北京时间零点算（你们俩都在国内）
   const sinceMs = Date.parse(`${info.since}T00:00:00+08:00`);
-  const minTs = Math.floor(sinceMs / 1000) - LOOKBACK_DAYS * 86400;
+  // 先近期、后历史：两次查询之间移入历史的成交仍能读到，再按 ID 去重。
+  // 起始日前的成交只参与净仓位计算，不导入。
+  const byId = new Map();
+  for (const path of ['/portfolio/fills', '/historical/fills']) {
+    let cursor;
+    do {
+      const page = await get(path, { limit: 1000, cursor });
+      for (const f of page.fills || []) byId.set(String(f.fill_id), f);
+      cursor = page.cursor;
+    } while (cursor);
+  }
+  const fills = [...byId.values()];
+  const markets = {};
+  const getMarket = async (ticker) => {
+    if (!markets[ticker]) {
+      let page;
+      try { page = await get(`/markets/${encodeURIComponent(ticker)}`); }
+      catch (err) {
+        if (err.status !== 404) throw err;
+        page = await get(`/historical/markets/${encodeURIComponent(ticker)}`);
+      }
+      markets[ticker] = page.market;
+      if (!markets[ticker]) throw new Error('Kalshi 市场信息缺失');
+    }
+    return markets[ticker];
+  };
+  const tickers = new Set(fills.filter((f) => Date.parse(f.created_time) >= sinceMs).map((f) => f.ticker || f.market_ticker));
+  let combos = 0;
+  for (const ticker of tickers) {
+    if (ticker.startsWith(SERIES + '-')) continue;
+    const m = await getMarket(ticker);
+    if (!isCombo(m)) continue;
+    combos++;
+    for (const leg of m.mve_selected_legs || []) {
+      if (!leg.event_ticker.startsWith(SERIES + '-')) await getMarket(leg.market_ticker);
+    }
+  }
 
-  const fills = [];
-  let cursor;
-  do {
-    const page = await get('/portfolio/fills', { min_ts: minTs, limit: 1000, cursor });
-    fills.push(...(page.fills || []));
-    cursor = page.cursor;
-  } while (cursor);
-  const nbaFills = fills.filter((f) => (f.ticker || '').startsWith(SERIES + '-'));
-
-  const mapped = mapFills(nbaFills, { sinceMs });
+  const minNbaMs = sinceMs - LOOKBACK_DAYS * 86400000;
+  const mapped = mapFills(fills.filter((f) => !(f.ticker || f.market_ticker).startsWith(SERIES + '-')
+    || Date.parse(f.created_time) >= minNbaMs), { sinceMs, markets });
   // 需要查结果的比赛：这次的 + 账本里还没出结果的
   const events = new Set([...mapped.fills.map((f) => f.event_ticker), ...(info.open_events || [])]);
   const results = [];
   for (const ev of events) {
-    const page = await get('/markets', { event_ticker: ev, limit: 10 });
-    const r = resultOf(ev, page.markets || []);
+    let r;
+    if (ev.startsWith(SERIES + '-')) {
+      const page = await get('/markets', { event_ticker: ev, limit: 10 });
+      const current = page.markets || [];
+      r = resultOf(ev, current);
+      // /markets 不返回已归档的市场；按实际成交的 ticker 补查（含历史回退）。
+      if (!r) {
+        const listed = new Set(current.map((m) => m.ticker));
+        const traded = new Set(fills.map((f) => f.ticker || f.market_ticker)
+          .filter((ticker) => ticker.startsWith(ev + '-') && !listed.has(ticker)));
+        for (const ticker of traded) {
+          r = resultOf(ev, [await getMarket(ticker)]);
+          if (r) break;
+        }
+      }
+    } else r = comboResult(await getMarket(ev));
     if (r) results.push(r);
   }
-  const message = `Kalshi 成交 ${fills.length} 笔（NBA 比赛 ${nbaFills.length} 笔），整理出 ${mapped.fills.length} 条，跳过 ${mapped.skipped.length} 条，出结果 ${results.length} 场`;
+  const message = `Kalshi 成交 ${fills.length} 笔（含 ${combos} 个 combo），整理出 ${mapped.fills.length} 条，跳过 ${mapped.skipped.length} 条，出结果 ${results.length} 项`;
   const out = await call('kalshi_ingest', { p_token: token, p_fills: mapped.fills, p_results: results, p_message: message });
   log(`${message}；新导入 ${out.imported} 条，自动结算 ${out.settled} 场`);
   // 汇率失败不影响同步

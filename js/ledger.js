@@ -11,6 +11,15 @@
 export const HOLDERS = ['owner', 'partner'];
 export const SIDES = ['a', 'b'];
 
+export const gameTitle = (g) => !g ? '已删除的比赛' : g.market_kind === 'combo'
+  ? `Combo · ${g.title || g.kalshi_event_ticker}` : `${g.team_a} vs ${g.team_b}`;
+export const sideName = (g, s) => g?.market_kind === 'combo'
+  ? (s === 'a' ? '全部命中（YES）' : '未全部命中（NO）') : (g ? (s === 'a' ? g.team_a : g.team_b) : '?') + '赢';
+export const payoutMicros = (e, side) => e.a_payout_micros == null
+  ? (side === e.winner ? 1e6 : 0) : side === 'a' ? e.a_payout_micros : 1e6 - e.a_payout_micros;
+export const settlementLabel = (g, e) => e.winner ? sideName(g, e.winner)
+  : `按实际赔付结算（YES 每张 $${(payoutMicros(e, 'a') / 1e6).toFixed(4)}）`;
+
 /** 张数 → 百分之一张的整数 */
 export const toUnits = (contracts) => Math.round(Number(contracts) * 100);
 
@@ -144,13 +153,20 @@ export function compute(events, games = []) {
         problems.push({ id: e.id, message: warning });
       } else {
         st.settled = { winner: e.winner, at: e.occurred_at, eventId: e.id };
+        if (e.a_payout_micros != null) st.settled.a_payout_micros = e.a_payout_micros;
+        const payouts = Object.fromEntries(SIDES.map((side) => {
+          const rate = payoutMicros(e, side) / 1e6;
+          const partner = Math.round(st.holders.partner[side].units * rate);
+          const total = Math.round((st.holders.owner[side].units + st.holders.partner[side].units) * rate);
+          return [side, { partner, owner: total - partner }]; // 分币尾差留在持有人，合计等于账户赔付
+        }));
         for (const who of HOLDERS) {
           const h = st.holders[who];
           let payout = 0, removed = 0, held = 0;
           for (const side of SIDES) {
             const pos = h[side];
             held += pos.units;
-            const sidePayout = side === e.winner ? pos.units : 0; // 每 0.01 张回 1 分
+            const sidePayout = payouts[side][who];
             if (pos.units || pos.basis) {
               pos.realized += sidePayout - pos.basis;
               pos.closedCost += pos.basis;
@@ -291,7 +307,7 @@ export function insights(result, { monthOf } = {}) {
   });
   const picks = [];
   for (const g of result.games) {
-    if (!g.settled || !g.game) continue;
+    if (!g.settled || !g.game || !g.settled.winner) continue; // 非二元赔付不参与押中率
     for (const holder of HOLDERS) {
       for (const side of SIDES) {
         const s = g.holders[holder].sides[side];
@@ -327,6 +343,7 @@ export function insights(result, { monthOf } = {}) {
   // 球队：押这个队赢，你们俩合起来赚了多少
   const byTeam = new Map();
   for (const p of picks) {
+    if (p.game.market_kind === 'combo') continue; // 一张串关不能归因到某一支球队
     if (!byTeam.has(p.team)) byTeam.set(p.team, []);
     byTeam.get(p.team).push(p);
   }
@@ -422,7 +439,7 @@ export function toCSV(events, games, names) {
     const g = e.game_id ? gameById.get(e.game_id) : null;
     const eff = result.effects.get(e.id);
     const who = e.kind === 'fill' ? names[e.holder] : e.kind === 'transfer' ? (e.direction === 'to_owner' ? `${names.partner}→${names.owner}` : `${names.owner}→${names.partner}`) : '';
-    const sideName = g && (e.side || e.winner) ? `${(e.side || e.winner) === 'a' ? g.team_a : g.team_b}赢` : '';
+    const direction = e.kind === 'settle' ? settlementLabel(g, e) : e.side ? sideName(g, e.side) : '';
     const amount = e.kind === 'fill' ? fillAmount(e) : e.kind === 'transfer' ? e.amount_cents : null;
     const status = result.voidOf.has(e.id) ? '已撤销' : !needsConfirm(e) ? '' : e.confirmed_at ? '已确认' : '待确认';
     return [
@@ -430,8 +447,8 @@ export function toCSV(events, games, names) {
       new Date(e.occurred_at).toISOString(),
       e.kind === 'fill' ? (e.action === 'buy' ? '买入' : '卖出') : kindName[e.kind],
       who,
-      g ? `${g.team_a} vs ${g.team_b}` : '',
-      sideName,
+      g ? gameTitle(g) : '',
+      direction,
       e.contracts ?? '',
       e.kind === 'fill' ? +avgFillPrice(e).toFixed(2) : '',
       e.kind === 'fill' ? (notional(e) / 100).toFixed(2) : '',

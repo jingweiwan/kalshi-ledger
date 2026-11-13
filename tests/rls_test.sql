@@ -2,6 +2,7 @@
 -- 身份：1111 = 持有人，2222 = 朋友，3333 = 陌生人
 \set ON_ERROR_STOP 1
 \set QUIET 1
+set request.headers = '{"x-client-info":"kalshi-ledger/2"}';
 
 create or replace function pg_temp.as_user(u text) returns void language plpgsql as $$
 begin perform set_config('request.jwt.claim.sub', u, false); end $$;
@@ -200,4 +201,80 @@ do $$ begin
   if (select last_imported from public.kalshi_sync) is null then raise exception 'FAIL: 没记录同步时间'; end if;
   raise notice 'PASS 记录了上次同步';
 end $$;
+-- Combo：同一 Kalshi event 下不同合约隔离；长标题/各条腿保留，实际赔付写入结算。
+set role anon;
+select public.kalshi_ingest('tok-123', '[
+  {"id":"C1","event_ticker":"COMBO-EVENT-C1","market_ticker":"COMBO-EVENT-C1","market_kind":"combo","title":"勇士赢 ＋ Lakers vs Suns · Total points over 220.5 · YES","legs":[{"market_ticker":"TOTAL-220","side":"yes","label":"Over 220.5"}],"team_a":"YES","team_b":"NO","side":"a","action":"buy","contracts":10,"notional_cents":320,"fee_cents":12,"occurred_at":"2026-11-04T01:00:00Z"},
+  {"id":"C2","event_ticker":"COMBO-EVENT-C2","market_ticker":"COMBO-EVENT-C2","market_kind":"combo","title":"另一张串关","legs":[],"team_a":"YES","team_b":"NO","side":"b","action":"buy","contracts":5,"notional_cents":200,"fee_cents":5,"occurred_at":"2026-11-04T01:00:00Z"}
+]'::jsonb, '[
+  {"event_ticker":"COMBO-EVENT-C1","winner":null,"a_payout_micros":625000,"decided_at":"2026-11-04T05:00:00Z"},
+  {"event_ticker":"COMBO-EVENT-C2","winner":"b","a_payout_micros":0,"decided_at":"2026-11-04T05:00:00Z"}
+]'::jsonb);
+select pg_temp.must_fail('select public.kalshi_ingest(''tok-123'', ''[]''::jsonb, ''[{"event_ticker":"INVALID","winner":null,"a_payout_micros":1000001}]''::jsonb)', '实际赔付超过 $1');
+select pg_temp.must_fail('select public.kalshi_ingest(''tok-123'', ''[]''::jsonb, ''[{"event_ticker":"INVALID","winner":null}]''::jsonb)', '结算缺少结果和赔付');
+reset role; set role authenticated;
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select public.assign_kalshi_fill(:'ledger_id', 'C1', 'partner');
+do $$ begin
+  if not exists (select 1 from public.games where kalshi_event_ticker = 'COMBO-EVENT-C1'
+    and market_kind = 'combo' and league = 'Combo' and char_length(title) > 20 and jsonb_array_length(legs) = 1) then
+    raise exception 'FAIL: 串关内容未完整保留';
+  end if;
+  if not exists (select 1 from public.events e join public.games g on g.id = e.game_id where
+    g.kalshi_event_ticker = 'COMBO-EVENT-C1' and e.kind = 'settle' and e.winner is null and e.a_payout_micros = 625000) then
+    raise exception 'FAIL: 非二元赔付未自动结算';
+  end if;
+  if (select status from public.kalshi_fills where id = 'C2') <> 'pending' then
+    raise exception 'FAIL: 不同串关混在一起';
+  end if;
+end $$;
+select public.assign_kalshi_fill(:'ledger_id', 'C2', 'owner');
+do $$ begin
+  if (select count(*) from public.games where market_kind = 'combo') <> 2 then raise exception 'FAIL: 应该有两个独立串关'; end if;
+  if not exists (select 1 from public.events e join public.games g on g.id = e.game_id where
+    g.kalshi_event_ticker = 'COMBO-EVENT-C2' and e.kind = 'settle' and e.winner = 'b' and e.a_payout_micros = 0) then
+    raise exception 'FAIL: NO 侧串关未结算';
+  end if;
+end $$;
+select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
+do $$ begin
+  if exists (select 1 from public.games where market_kind = 'combo') then raise exception 'FAIL: 陌生人读到了串关'; end if;
+end $$;
+-- 旧页面没有新版请求标识：不能读新账，也不能写入旧算法生成的对账单或成交。
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+create or replace function pg_temp.must_refresh(sql text) returns void language plpgsql as $$
+begin
+  begin
+    execute sql;
+  exception when others then
+    if sqlerrm = '账本已升级，请刷新页面后重试' then return; end if;
+    raise;
+  end;
+  raise exception 'FAIL: 旧页面应被拒绝但请求成功：%', sql;
+end $$;
+set request.headers = '';
+select pg_temp.must_refresh('select * from public.ledgers');
+select pg_temp.must_refresh('select * from public.events');
+set request.headers = '{"x-client-info":"supabase-js-web/2.78.0"}';
+select pg_temp.must_refresh('select * from public.games');
+select pg_temp.must_refresh('select * from public.statements');
+select pg_temp.must_refresh(format('select public.create_statement(%L, -400, 999)', :'ledger_id'));
+select pg_temp.must_refresh(format('select public.confirm_events(%L, 999)', :'ledger_id'));
+select pg_temp.must_refresh(format('select public.assign_kalshi_fill(%L, ''C1'', ''partner'')', :'ledger_id'));
+select pg_temp.must_refresh(format('insert into public.events (ledger_id, kind, direction, amount_cents) values (%L, ''transfer'', ''to_owner'', 100)', :'ledger_id'));
+set request.headers = '{"x-client-info":"kalshi-ledger/20"}';
+select pg_temp.must_refresh('select * from public.events');
+-- 真实 Supabase SDK 会把自定义标识追加到自身版本后面。
+set request.headers = '{"x-client-info":"supabase-js/2.117.3; runtime=browser, kalshi-ledger/2"}';
+do $$ begin
+  if not exists (select 1 from public.events where kind = 'settle' and a_payout_micros = 625000) then
+    raise exception 'FAIL: 新页面应能读取实际赔付结算';
+  end if;
+end $$;
+-- 无客户端标识的令牌同步仍可正常运行。
+reset role; set role anon;
+set request.headers = '{}';
+select public.kalshi_sync_info('tok-123');
+select public.kalshi_ingest('tok-123', '[]'::jsonb, '[]'::jsonb);
+reset role;
 \echo ALL RLS TESTS PASSED

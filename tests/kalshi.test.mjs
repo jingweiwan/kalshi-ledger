@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { micros, units, parseTickers, mapFills, resultOf, eventOf } from '../sync/kalshi-map.mjs';
+import { micros, units, parseTickers, mapFills, resultOf, eventOf, comboResult } from '../sync/kalshi-map.mjs';
 import { run } from '../sync/kalshi-sync.mjs';
 
 // 字段和 GET /portfolio/fills 返回的一样，数字是编的
@@ -88,6 +88,8 @@ test('同步流程：读起始日期 → 拉成交 → 查结果 → 写入账�
   const calls = [];
   const get = async (path, q) => {
     calls.push(['get', path, q]);
+    if (path === '/historical/fills') return { fills: [], cursor: '' };
+    if (path === '/markets/KXBRENTD-26NOV03-T80') return { market: { ticker: 'KXBRENTD-26NOV03-T80' } };
     if (path === '/portfolio/fills') {
       return q.cursor
         ? { fills: [fill({ id: 'f2', ticker: 'KXBRENTD-26NOV03-T80', outcome: 'yes', action: 'buy', side: 'yes', count: '1.00', yes: '0.3000', fee: '0.02', t: '2026-11-03T03:00:00Z' })], cursor: '' }
@@ -111,7 +113,7 @@ test('同步流程：读起始日期 → 拉成交 → 查结果 → 写入账�
   const logs = [];
   const out = await run({ get, call, token: 't', log: (m) => logs.push(m), rate: async () => ({ rate: 6.684, source: 'test' }) });
   assert.equal(calls.filter((c) => c[1] === '/portfolio/fills').length, 2, '翻页');
-  assert.equal(calls.find((c) => c[1] === '/portfolio/fills')[2].min_ts, Math.floor(Date.parse('2026-11-01T00:00:00+08:00') / 1000) - 7 * 86400);
+  assert.equal(calls.find((c) => c[1] === '/portfolio/fills')[2].min_ts, undefined, '完整历史用于算净仓位，输出仍按起始日期过滤');
   assert.deepEqual(ingested.p_fills.map((f) => f.id), ['f1']);
   assert.equal(ingested.p_fills[0].order_id, 'o-f1');
   assert.deepEqual(ingested.p_results, [{ event_ticker: 'KXNBAGAME-26NOV02PHXGSW', winner: 'b', decided_at: '2026-11-03T05:55:27Z' }]);
@@ -119,4 +121,131 @@ test('同步流程：读起始日期 → 拉成交 → 查结果 → 写入账�
   assert.equal(fxSet.p_rate, 6.684);
   assert.equal(logs.length, 2);
   assert.ok(!/KXNBA|0\.8|勇士/.test(logs.join('\n')), '日志里没有交易内容');
+});
+
+const COMBO = 'CUSTOMCOLLECTION-EVENT-C1';
+const combo = (ticker = COMBO) => ({ ticker, event_ticker: 'CUSTOMCOLLECTION-EVENT', mve_collection_ticker: 'CUSTOMCOLLECTION',
+  mve_selected_legs: [
+    { event_ticker: eventOf(GSW), market_ticker: GSW, side: 'no' },
+    { event_ticker: 'TOTAL', market_ticker: 'TOTAL-220', side: 'yes' },
+  ], status: 'active', result: '' });
+const comboFill = (o = {}) => fill({ id: 'c1', ticker: COMBO, outcome: 'yes', action: 'buy', side: 'yes', count: '10.00', yes: '0.3215', fee: '0.1200', t: '2026-11-03T02:00:00Z', ...o });
+const comboMarkets = { [COMBO]: combo(), 'TOTAL-220': { title: 'Lakers vs Suns', yes_sub_title: 'Over 220.5 points' } };
+
+test('任何系列的 combo 都通过元数据识别，保留每条腿的方向及完整内容', () => {
+  const { fills } = mapFills([comboFill()], { markets: comboMarkets });
+  assert.equal(fills.length, 1);
+  const f = fills[0];
+  assert.equal(f.event_ticker, COMBO, '账本按合约隔离');
+  assert.equal(f.market_kind, 'combo');
+  assert.equal(f.title, '太阳赢 ＋ Lakers vs Suns · Over 220.5 points · YES');
+  assert.equal(f.legs[0].side, 'no');
+  assert.deepEqual([f.side, f.contracts, f.price_cents, f.notional_cents, f.fee_cents], ['a', 10, null, 322, 12]);
+});
+
+test('同 event 的不同串关独立记账，买 NO 与反向平仓不会变成单腿仓位', () => {
+  const second = 'CUSTOMCOLLECTION-EVENT-C2';
+  const { fills } = mapFills([
+    comboFill(),
+    comboFill({ id: 'c2', ticker: second, outcome: 'no', count: '5.00' }),
+    comboFill({ id: 'c3', outcome: 'no', count: '15.00', t: '2026-11-03T03:00:00Z' }),
+  ], { markets: { ...comboMarkets, [second]: combo(second) } });
+  assert.equal(fills.length, 4);
+  assert.deepEqual(fills.map((f) => [f.event_ticker, f.side, f.action, f.contracts]), [
+    [COMBO, 'a', 'buy', 10], [second, 'b', 'buy', 5], [COMBO, 'a', 'sell', 10], [COMBO, 'b', 'buy', 5],
+  ]);
+  assert.equal(fills[2].fee_cents + fills[3].fee_cents, 12);
+});
+
+test('combo 只采用最终官方赔付，支持非二元赔付，不在 determined 阶段提前结算', () => {
+  const m = { ...combo(), status: 'settled', result: 'yes', settlement_ts: '2026-11-04T02:00:00Z' };
+  assert.equal(comboResult({ ...m, status: 'determined' }), null);
+  assert.equal(comboResult(m).winner, 'a');
+  assert.equal(comboResult({ ...m, result: 'no' }).winner, 'b');
+  assert.deepEqual(comboResult({ ...m, result: 'scalar', settlement_value_dollars: '0.625000' }), {
+    event_ticker: COMBO, winner: null, a_payout_micros: 625000, decided_at: m.settlement_ts,
+  });
+  assert.equal(comboResult({ ...m, result: '' }), null);
+  assert.throws(() => comboResult({ ...m, settlement_value_dollars: '1.01' }));
+});
+
+test('同步补历史 combo，跨接口去重，已归档市场回退查询，按起始日过滤且追踪未结算 combo', async () => {
+  const seen = [];
+  let ingested;
+  const first = comboFill();
+  const old = comboFill({ id: 'old', outcome: 'no', count: '2.00', t: '2026-09-01T00:00:00Z' });
+  const second = 'CUSTOMCOLLECTION-EVENT-C2';
+  const get = async (path, q) => {
+    seen.push(path);
+    if (path === '/historical/fills') return q.cursor ? { fills: [first], cursor: '' } : { fills: [old], cursor: 'next' };
+    if (path === '/portfolio/fills') return { fills: [first], cursor: '' };
+    if (path === '/markets/' + COMBO) throw Object.assign(new Error('404'), { status: 404 });
+    if (path === '/historical/markets/' + COMBO) return { market: { ...combo(), status: 'settled', result: 'yes' } };
+    if (path === '/markets/TOTAL-220') return { market: comboMarkets['TOTAL-220'] };
+    if (path === '/markets/' + second) return { market: { ...combo(second), status: 'settled', result: 'no' } };
+    throw new Error('unexpected ' + path);
+  };
+  await run({ get, token: 't', log: () => {}, rate: async () => null, call: async (name, args) => {
+    if (name === 'kalshi_sync_info') return { since: '2026-11-01', open_events: [second] };
+    ingested = args;
+    return { imported: args.p_fills.length, settled: 0 };
+  } });
+  assert.deepEqual(ingested.p_fills.map((f) => [f.id, f.action, f.contracts]), [['c1', 'sell', 2], ['c1#2', 'buy', 8]]);
+  assert.deepEqual(ingested.p_results.map((r) => [r.event_ticker, r.winner]), [[COMBO, 'a'], [second, 'b']]);
+  assert.equal(seen.filter((p) => p === '/historical/fills').length, 2);
+  assert.equal(seen.filter((p) => p === '/markets/TOTAL-220').length, 1, '元数据缓存');
+});
+
+test('跨归档迁移时先读近期再读历史，迁移中的成交不会遗漏或重复', async () => {
+  let moved = false;
+  let ingested;
+  const paths = [];
+  const f1 = comboFill({ id: 'moved' });
+  const f2 = comboFill({ id: 'live' });
+  const get = async (path) => {
+    paths.push(path);
+    if (path === '/portfolio/fills') {
+      moved = true; // f1 此时已从近期移除，随后可从历史中读到
+      return { fills: [f2] };
+    }
+    if (path === '/historical/fills') return { fills: moved ? [f1, f2] : [] };
+    if (path === '/markets/' + COMBO) return { market: { ...combo(), status: 'settled', result: 'yes' } };
+    if (path === '/markets/TOTAL-220') return { market: comboMarkets['TOTAL-220'] };
+    throw new Error('unexpected ' + path);
+  };
+  await run({ get, token: 't', rate: async () => null, log: () => {}, call: async (name, args) => {
+    if (name === 'kalshi_sync_info') return { since: '2026-11-01', open_events: [] };
+    ingested = args;
+    return { imported: args.p_fills.length, settled: 0 };
+  } });
+  assert.deepEqual(paths.slice(0, 2), ['/portfolio/fills', '/historical/fills']);
+  assert.deepEqual(ingested.p_fills.map((f) => f.id).sort(), ['live', 'moved']);
+  assert.equal(ingested.p_results.length, 1, '写入结果前两笔成交均已收齐');
+});
+
+test('已归档 NBA 成交通过市场详情历史回退获得结果，账本未结算比赛也补查', async () => {
+  const paths = [];
+  let ingested;
+  let since = '2026-11-01';
+  const get = async (path) => {
+    paths.push(path);
+    if (path === '/portfolio/fills') return { fills: [] };
+    if (path === '/historical/fills') return { fills: [fill({ id: 'old-nba', ticker: GSW, outcome: 'yes', action: 'buy', side: 'yes', count: '10.00', yes: '0.8000', fee: '0.12', t: '2026-11-03T02:00:00Z' })] };
+    if (path === '/markets') return { markets: [] };
+    if (path === '/markets/' + GSW) throw Object.assign(new Error('404'), { status: 404 });
+    if (path === '/historical/markets/' + GSW) return { market: { ticker: GSW, status: 'finalized', result: 'yes', settlement_ts: '2026-11-03T05:55:27Z' } };
+    throw new Error('unexpected ' + path);
+  };
+  const opts = { get, token: 't', rate: async () => null, log: () => {}, call: async (name, args) => {
+    if (name === 'kalshi_sync_info') return { since, open_events: [eventOf(GSW)] };
+    ingested = args;
+    return { imported: args.p_fills.length, settled: 0 };
+  } };
+  await run(opts);
+  assert.deepEqual(ingested.p_results, [{ event_ticker: eventOf(GSW), winner: 'b', decided_at: '2026-11-03T05:55:27Z' }]);
+  assert.ok(paths.includes('/historical/markets/' + GSW));
+  since = '2026-11-10';
+  await run(opts);
+  assert.equal(ingested.p_fills.length, 0, '没有新成交时也要补查已在账本中的未结算比赛');
+  assert.equal(ingested.p_results[0].winner, 'b');
 });

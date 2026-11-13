@@ -48,23 +48,48 @@ export const teamName = (code, fallback) => TEAMS[code] || fallback || code;
 /** market ticker → event ticker（去掉最后一段队名） */
 export const eventOf = (marketTicker) => marketTicker.slice(0, marketTicker.lastIndexOf('-'));
 
+// Combo 的 event 可能包含多个不同合约，账本必须按 market ticker 隔离。
+export const isCombo = (market) => !!market?.mve_collection_ticker || !!market?.mve_selected_legs?.length;
+
+export function comboDetails(market, markets = {}) {
+  const legs = (market.mve_selected_legs || []).map((leg) => {
+    let label;
+    if (leg.event_ticker.startsWith(SERIES + '-')) {
+      const t = parseTickers(leg.event_ticker, leg.market_ticker);
+      const code = leg.side === 'yes' ? t.code : t.mySide === 'a' ? t.b : t.a;
+      label = `${teamName(code)}赢`;
+    } else {
+      const m = markets[leg.market_ticker];
+      const sub = leg.side === 'yes' ? m?.yes_sub_title : m?.no_sub_title;
+      label = [m?.title || leg.market_ticker, sub, leg.side.toUpperCase()].filter(Boolean).join(' · ');
+    }
+    return { ...leg, label };
+  });
+  return { market_kind: 'combo', title: legs.map((l) => l.label).join(' ＋ ') || market.title || market.ticker, legs };
+}
+
 /**
  * 把 Kalshi 的 fills 换成账本的待分配记录。
  * @param {Array} fills  GET /portfolio/fills 的结果（可以包含别的系列，会被跳过）
- * @param {object} opts  { sinceMs: 只输出这之后的成交; names: { [event_ticker]: {a, b} } 中文或英文队名 }
+ * @param {object} opts  { sinceMs: 只输出这之后的成交; names: 队名; markets: 按 market ticker 索引的市场详情 }
  */
-export function mapFills(fills, { sinceMs = 0, names = {} } = {}) {
-  const nba = fills
-    .filter((f) => (f.ticker || f.market_ticker || '').startsWith(SERIES + '-'))
+export function mapFills(fills, { sinceMs = 0, names = {}, markets = {} } = {}) {
+  const supported = fills
+    .filter((f) => (f.ticker || f.market_ticker || '').startsWith(SERIES + '-') || isCombo(markets[f.ticker || f.market_ticker]))
     .sort((x, y) => (x.created_time || '').localeCompare(y.created_time || '') || String(x.fill_id).localeCompare(String(y.fill_id)));
   const position = new Map(); // market → 净仓位（百分之一张，YES 为正、NO 为负）
   const out = [];
   const skipped = [];
-  for (const f of nba) {
+  for (const f of supported) {
     const market = f.ticker || f.market_ticker;
-    const event = eventOf(market);
+    const combo = isCombo(markets[market]);
+    const event = combo ? market : eventOf(market);
     let t;
-    try { t = parseTickers(event, market); } catch (err) { skipped.push({ id: f.fill_id, reason: err.message }); continue; }
+    let details;
+    try {
+      t = combo ? { a: 'YES', b: 'NO', mySide: 'a' } : parseTickers(event, market);
+      details = combo ? comboDetails(markets[market], markets) : {};
+    } catch (err) { skipped.push({ id: f.fill_id, reason: err.message }); continue; }
     const outcome = f.outcome_side || (f.action === 'buy' ? f.side : f.side === 'yes' ? 'no' : 'yes');
     if (outcome !== 'yes' && outcome !== 'no') { skipped.push({ id: f.fill_id, reason: '不知道方向' }); continue; }
     const q = units(f.count_fp);
@@ -92,13 +117,14 @@ export function mapFills(fills, { sinceMs = 0, names = {} } = {}) {
         order_id: f.order_id ? String(f.order_id) : null,
         event_ticker: event,
         market_ticker: market,
+        ...details,
         team_a: teamName(t.a, nm.a),
         team_b: teamName(t.b, nm.b),
         starts_at: null,
         side,
         action: leg.action,
         contracts: leg.q / 100,
-        price_cents: priceMicros % 10000 === 0 ? priceMicros / 10000 : null,
+        price_cents: priceMicros % 10000 === 0 && priceMicros > 0 && priceMicros < 1e6 ? priceMicros / 10000 : null,
         notional_cents: microsToCents((leg.q * priceMicros) / 100),
         fee_cents: fee,
         fee_dollars: String(f.fee_cost ?? ''),
@@ -107,6 +133,24 @@ export function mapFills(fills, { sinceMs = 0, names = {} } = {}) {
     });
   }
   return { fills: out, skipped };
+}
+
+/** Combo 只按这个合约自己的官方结算值结算，不从各条腿猜结果。 */
+export function comboResult(market) {
+  if (!['finalized', 'settled'].includes(market.status)) return null;
+  let payout;
+  if (market.settlement_value_dollars != null && market.settlement_value_dollars !== '') {
+    payout = micros(market.settlement_value_dollars);
+  } else if (market.result === 'yes' || market.result === 'no') {
+    payout = market.result === 'yes' ? 1e6 : 0;
+  } else return null;
+  if (payout < 0 || payout > 1e6) throw new Error('Combo 结算值超出范围');
+  return {
+    event_ticker: market.ticker,
+    winner: payout === 1e6 ? 'a' : payout === 0 ? 'b' : null,
+    a_payout_micros: payout,
+    decided_at: market.settlement_ts || market.close_time,
+  };
 }
 
 /**
