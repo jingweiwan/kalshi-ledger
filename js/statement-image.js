@@ -1,6 +1,6 @@
 // 对账单：生成发微信用的图片和文字。站在持有人的角度写给朋友（「我欠你」）。
-import { money, signed, price, dt, full, day, qty } from './format.js?v=mwemrsas';
-import { avgFillPrice, gameTitle as title, sideName, settlementLabel } from './ledger.js?v=mwemrsas';
+import { money, signed, price, dt, full, day, qty } from './format.js?v=mwnc5jvn';
+import { avgFillPrice, gameTitle as title, sideName, settlementLabel } from './ledger.js?v=mwnc5jvn';
 
 function describe(e, gameById) {
   const g = e.game_id ? gameById.get(e.game_id) : null;
@@ -75,8 +75,8 @@ export function statementText(m) {
 }
 
 const C = {
-  bg: '#FFFFFF', ink: '#0B0F12', sub: '#69737C', line: '#ECEFF1', fill: '#F3F5F6',
-  up: '#0A9B57', upSoft: '#E2F5EA', down: '#DE4348', friend: '#C8670A', friendSoft: '#FBEBD9',
+  bg: '#FFFFFF', ink: '#202326', sub: '#62676D', line: '#E5E7EA', fill: '#F1F3F4',
+  up: '#147A50', upSoft: '#EDF6F0', down: '#B73D49', friend: '#62676D', friendSoft: '#F1F3F4',
 };
 const FONT = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Zen Hei", sans-serif';
 const font = (w, s) => `${w} ${s}px ${FONT}`;
@@ -109,21 +109,21 @@ export function drawStatement(m) {
     };
     const line = (yy) => { if (draw) { ctx.fillStyle = C.line; ctx.fillRect(P, yy, IW, 2); } };
     const rowLR = (left, sub, right, rightColor, bold) => {
-      ctx.font = font(bold ? 800 : 700, 27);
+      ctx.font = font(bold ? 500 : 400, 27);
       const rw = right ? ctx.measureText(right).width : 0;
       const labels = wrap(ctx, left, IW - rw - 24);
-      labels.forEach((s, i) => text(s, P, y + 34 + i * 36, font(bold ? 800 : 700, 27), C.ink));
-      if (right) text(right, W - P, y + 34, font(800, 27), rightColor || C.ink, 'right');
+      labels.forEach((s, i) => text(s, P, y + 34 + i * 36, font(bold ? 500 : 400, 27), C.ink));
+      if (right) text(right, W - P, y + 34, font(500, 27), rightColor || C.ink, 'right');
       y += Math.max(1, labels.length) * 36;
       if (sub) {
-        ctx.font = font(600, 22);
+        ctx.font = font(400, 22);
         const lines = wrap(ctx, sub, IW);
-        lines.forEach((s, i) => text(s, P, y + 30 + i * 30, font(600, 22), C.sub));
+        lines.forEach((s, i) => text(s, P, y + 30 + i * 30, font(400, 22), C.sub));
         y += lines.length * 30 + 12;
       }
       y += 20;
     };
-    const section = (s) => { y += 18; text(s, P, y + 32, font(800, 30), C.ink); y += 50; };
+    const section = (s) => { y += 18; text(s, P, y + 32, font(500, 30), C.ink); y += 50; };
 
     if (draw) { ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, canvas.height); }
     // 头部
@@ -131,25 +131,25 @@ export function drawStatement(m) {
       ctx.fillStyle = C.friendSoft;
       roundRect(ctx, P, y, IW, m.cny ? 300 : 260, 28); ctx.fill();
     }
-    text('合买对账单', P + 28, y + 52, font(800, 32), C.ink);
-    text(`#${m.no}`, W - P - 28, y + 52, font(700, 28), C.sub, 'right');
-    text(m.meta, P + 28, y + 92, font(600, 22), C.sub);
-    text(m.owe, P + 28, y + 140, font(800, 28), C.friend);
-    text(m.amount, P + 28, y + 222, font(800, 76), C.ink);
-    if (m.cny) text(m.cny, P + 28, y + 268, font(700, 26), C.sub);
+    text('合买对账单', P + 28, y + 52, font(500, 32), C.ink);
+    text(`#${m.no}`, W - P - 28, y + 52, font(500, 28), C.sub, 'right');
+    text(m.meta, P + 28, y + 92, font(400, 22), C.sub);
+    text(m.owe, P + 28, y + 140, font(500, 28), C.friend);
+    text(m.amount, P + 28, y + 222, font(500, 76), C.ink);
+    if (m.cny) text(m.cny, P + 28, y + 268, font(500, 26), C.sub);
     y += m.cny ? 300 : 260;
-    text(m.change, P, y + 44, font(600, 24), C.sub);
+    text(m.change, P, y + 44, font(400, 24), C.sub);
     y += 60;
 
     section('新增');
-    if (!m.items.length) { text('没有新记录', P, y + 30, font(600, 24), C.sub); y += 50; }
+    if (!m.items.length) { text('没有新记录', P, y + 30, font(400, 24), C.sub); y += 50; }
     m.items.forEach((it, i) => {
       if (i) line(y);
       rowLR(it.label, it.sub, signed(it.amount), it.amount > 0 ? C.up : it.amount < 0 ? C.down : C.ink);
     });
 
     section('你手里的单');
-    if (!m.positions.length) { text('没有', P, y + 30, font(600, 24), C.sub); y += 50; }
+    if (!m.positions.length) { text('没有', P, y + 30, font(400, 24), C.sub); y += 50; }
     m.positions.forEach((p, i) => { if (i) line(y); rowLR(p.label, p.sub, '持仓中', C.sub); });
 
     section('从头算');
@@ -160,9 +160,9 @@ export function drawStatement(m) {
 
     y += 24;
     if (draw) { ctx.fillStyle = C.upSoft; roundRect(ctx, P, y, IW, 76, 38); ctx.fill(); }
-    text(m.footer, W / 2, y + 48, font(800, 28), C.up, 'center');
+    text(m.footer, W / 2, y + 48, font(500, 28), C.up, 'center');
     y += 76 + 28;
-    text('合买账本', W / 2, y + 22, font(600, 20), C.sub, 'center');
+    text('合买账本', W / 2, y + 22, font(400, 20), C.sub, 'center');
     y += 30;
     return y + P;
   };

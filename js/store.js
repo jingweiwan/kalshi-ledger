@@ -1,7 +1,7 @@
 // 数据存取：Supabase（正式）或内存（示例模式），两者接口一样。
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mwemrsas';
-import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mwemrsas';
-import { compute } from './ledger.js?v=mwemrsas';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mwnc5jvn';
+import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mwnc5jvn';
+import { compute } from './ledger.js?v=mwnc5jvn';
 
 export function createStore() {
   const wantsDemo = new URLSearchParams(location.search).has('demo');
@@ -34,10 +34,23 @@ function unwrap({ data, error }) {
   return data;
 }
 
+// 只限制读取等待；记账写入不人为中断，避免误报超时后用户重复提交。
+async function timedFetch(url, init = {}) {
+  const method = (init.method || 'GET').toUpperCase();
+  if (method !== 'GET' && !(method === 'POST' && new URL(String(url)).pathname.endsWith('/rpc/kalshi_sync_status'))) return fetch(url, init);
+  const controller = new AbortController();
+  const cancel = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) cancel();
+  else init.signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException('请求超时，请检查网络后重试', 'AbortError')), 15000);
+  try { return await fetch(url, { ...init, signal: controller.signal }); }
+  finally { clearTimeout(timer); init.signal?.removeEventListener('abort', cancel); }
+}
+
 function supabaseStore() {
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-    global: { headers: { 'x-client-info': 'kalshi-ledger/2' } },
+    global: { headers: { 'x-client-info': 'kalshi-ledger/2' }, fetch: timedFetch },
   });
   const pageAll = async (query) => {
     const out = [];
@@ -54,7 +67,8 @@ function supabaseStore() {
       return data.session?.user ?? null;
     },
     onAuth(cb) {
-      sb.auth.onAuthStateChange((_event, session) => cb(session?.user ?? null));
+      // 回调期间 SDK 持有登录锁；离开回调后再读取账本，避免请求互相等待。
+      sb.auth.onAuthStateChange((_event, session) => { setTimeout(() => cb(session?.user ?? null), 0); });
     },
     async signIn(email, password) {
       unwrap(await sb.auth.signInWithPassword({ email, password }));
@@ -75,15 +89,25 @@ function supabaseStore() {
     async joinLedger(code, partnerName) {
       return unwrap(await sb.rpc('join_ledger', { p_code: code, p_partner_name: partnerName }));
     },
-    async load(ledgerId) {
+    async load(ledgerId, onProgress = () => {}) {
+      const labels = ['比赛和串关', '成交与转账记录', '历史对账单', '待分配成交', '同步状态', '显示汇率'];
+      const pending = new Set(labels);
+      const report = () => onProgress({ completed: labels.length - pending.size, total: labels.length, pending: [...pending] });
+      report();
+      const track = async (label, work) => {
+        const value = await work();
+        pending.delete(label);
+        report();
+        return value;
+      };
       const [games, events, statements, kalshi, kalshiSync, fx] = await Promise.all([
-        pageAll(() => sb.from('games').select('*').eq('ledger_id', ledgerId).order('created_at')),
-        pageAll(() => sb.from('events').select('*').eq('ledger_id', ledgerId).order('id')),
-        pageAll(() => sb.from('statements').select('*').eq('ledger_id', ledgerId).order('no')),
+        track(labels[0], () => pageAll(() => sb.from('games').select('*').eq('ledger_id', ledgerId).order('created_at'))),
+        track(labels[1], () => pageAll(() => sb.from('events').select('*').eq('ledger_id', ledgerId).order('id'))),
+        track(labels[2], () => pageAll(() => sb.from('statements').select('*').eq('ledger_id', ledgerId).order('no'))),
         // 还没运行新版 schema.sql 时这张表不存在，就当没有
-        pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch(() => []),
-        sb.rpc('kalshi_sync_status', { p_ledger: ledgerId }).then((r) => (r.error ? null : r.data)),
-        sb.from('fx_rates').select('*').eq('pair', 'USDCNY').maybeSingle().then((r) => (r.error ? null : r.data)),
+        track(labels[3], () => pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch(() => [])),
+        track(labels[4], () => sb.rpc('kalshi_sync_status', { p_ledger: ledgerId }).then((r) => (r.error ? null : r.data))),
+        track(labels[5], () => sb.from('fx_rates').select('*').eq('pair', 'USDCNY').maybeSingle().then((r) => (r.error ? null : r.data))),
       ]);
       for (const e of events) if (e.contracts != null) e.contracts = Number(e.contracts);
       for (const k of kalshi) k.contracts = Number(k.contracts);

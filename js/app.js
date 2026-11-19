@@ -1,21 +1,33 @@
 // 合买账本 · 页面
-import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES, gameTitle, sideName, settlementLabel } from './ledger.js?v=mwemrsas';
-import { createStore } from './store.js?v=mwemrsas';
-import { PUBLIC_URL } from './config.js?v=mwemrsas';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mwemrsas';
-import { statementModel, statementText, drawStatement } from './statement-image.js?v=mwemrsas';
+import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES, gameTitle, sideName, settlementLabel } from './ledger.js?v=mwnc5jvn';
+import { createStore } from './store.js?v=mwnc5jvn';
+import { PUBLIC_URL } from './config.js?v=mwnc5jvn';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mwnc5jvn';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mwnc5jvn';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
 const $toast = document.getElementById('toast');
 const $sheet = document.getElementById('sheet');
+const $loading = document.getElementById('load-status');
+let loadingRun = 0;
+
+function showLoading(label, completed = null, total = 1) {
+  $loading.hidden = false;
+  $loading.classList.toggle('compact', Boolean(S.r));
+  document.getElementById('load-label').textContent = label;
+  const bar = document.getElementById('load-progress');
+  bar.max = total;
+  if (completed == null) bar.removeAttribute('value'); else bar.value = completed;
+  document.getElementById('load-detail').textContent = completed == null ? '正在连接，请稍候' : `已完成 ${completed} / ${total} 项`;
+}
 
 const S = {
   store: null, user: null, ledger: null, role: null,
   data: { games: [], events: [], statements: [] }, r: null,
   gameById: new Map(), eventById: new Map(),
   params: { id: null, q: new URLSearchParams() },
-  authMode: 'signin', after: null, lastHash: null,
+  authMode: 'signin', after: null, lastHash: null, savedWrite: null,
   cur: (() => { try { return localStorage.getItem('kl.cur') === 'CNY' ? 'CNY' : 'USD'; } catch { return 'USD'; } })(),
 };
 
@@ -117,21 +129,83 @@ function download(blob, name) {
 
 // ───────────── 数据 ─────────────
 async function reload() {
-  S.data = await S.store.load(S.ledger.id);
-  S.r = compute(S.data.events, S.data.games);
-  S.gameById = new Map(S.data.games.map((g) => [g.id, g]));
-  S.eventById = new Map(S.data.events.map((e) => [e.id, e]));
+  const run = ++loadingRun;
+  showLoading(S.r ? '正在更新账目' : '正在获取账目', 0, 6);
+  try {
+    const data = await S.store.load(S.ledger.id, ({ completed, total, pending }) => {
+      if (run === loadingRun) showLoading(pending.length ? `正在获取${pending[0]}` : '正在整理账目', completed, total);
+    });
+    if (run !== loadingRun) return;
+    S.data = data;
+    S.r = compute(data.events, data.games);
+    S.gameById = new Map(data.games.map((g) => [g.id, g]));
+    S.eventById = new Map(data.events.map((e) => [e.id, e]));
+  } finally {
+    if (run === loadingRun) { loadingRun++; $loading.hidden = true; }
+  }
 }
 
 async function enter() {
+  S.savedWrite = null;
   S.ledger = null;
-  if (!S.user) return render();
-  S.ledger = await S.store.myLedger();
+  if (!S.user) { $loading.hidden = true; return render(); }
+  showLoading('正在读取账本信息');
+  try { S.ledger = await S.store.myLedger(); }
+  catch (err) { $loading.hidden = true; throw err; }
   if (S.ledger) {
     S.role = S.ledger.owner_id === S.user.id ? 'owner' : 'partner';
     await reload();
   }
+  $loading.hidden = true;
   render();
+}
+
+// 写入一旦成功，后续失败只能重试读取，不能回到原表单重新写入。
+async function finishWrite(message, { hash = null, ledger = false } = {}) {
+  closeSheet();
+  S.savedWrite = { message, hash, ledger, busy: false, error: null };
+  return refreshSavedWrite();
+}
+
+async function refreshSavedWrite() {
+  const saved = S.savedWrite;
+  if (!saved || saved.busy) return false;
+  saved.busy = true;
+  saved.error = null;
+  render();
+  try {
+    if (saved.ledger) {
+      const ledger = await S.store.myLedger();
+      if (!ledger) throw new Error('未读取到账本，请重试');
+      S.ledger = ledger;
+      S.role = ledger.owner_id === S.user.id ? 'owner' : 'partner';
+    }
+    await reload();
+    if (S.savedWrite !== saved) return false;
+    S.savedWrite = null;
+    if (saved.hash) location.hash = saved.hash;
+    render();
+    toast(saved.message);
+    return true;
+  } catch (err) {
+    if (S.savedWrite === saved) {
+      saved.busy = false;
+      saved.error = err.message || String(err);
+      $loading.hidden = true;
+      render();
+    }
+    return false;
+  }
+}
+
+function viewSavedWrite() {
+  const saved = S.savedWrite;
+  return `<div class="auth">
+    <h1 class="h-t">${esc(saved.message)}</h1>
+    <p class="sub">${saved.busy ? '正在更新账目，请稍候' : '账目刷新未完成。操作已保存，无需再次提交。'}</p>
+    ${saved.error ? `<p class="err">${esc(saved.error)}</p>` : ''}
+    <button class="cta" type="button" data-act="refresh-saved" ${saved.busy ? 'disabled' : ''}>${saved.busy ? '正在刷新…' : '重新读取账目'}</button>
+  </div>`;
 }
 
 // ───────────── 路由 ─────────────
@@ -157,7 +231,8 @@ const ROUTES = {
 function render() {
   S.after = null;
   let html, tab = null;
-  if (!S.user) html = viewLogin();
+  if (S.savedWrite && S.user) html = viewSavedWrite();
+  else if (!S.user) html = viewLogin();
   else if (!S.ledger) html = viewSetup();
   else {
     const { name, id, q } = parseHash();
@@ -178,7 +253,7 @@ function demoBanner() {
   if (!S.store?.demo) return '';
   const text = S.store.notConfigured
     ? '还没连上数据库，现在看到的是示例数据。改动只在这个页面里，刷新就恢复。'
-    : '示例模式：数据是假的，刷新就恢复。';
+    : '示例账本 · 可自由试用，刷新后恢复';
   const exit = S.store.notConfigured ? '' : `<a class="pill small" href="${location.pathname}">‹ 返回登录</a>`;
   return `<div class="demo"><span>${text}</span>${exit}</div>`;
 }
@@ -189,7 +264,7 @@ function viewLogin() {
   return `<div class="auth">
     <div class="logo" aria-hidden="true"><i class="av me">合</i><i class="av fr">买</i></div>
     <h1 class="h-t">合买账本</h1>
-    <p class="sub">和朋友合买 Kalshi 的记账本：每笔成交各记各的，随时算清谁欠谁。</p>
+    <p class="sub">Kalshi 合买记账与对账</p>
     <div class="tabs2" role="tablist">
       <button type="button" role="tab" class="${signup ? '' : 'on'}" data-act="auth-mode" data-mode="signin">登录</button>
       <button type="button" role="tab" class="${signup ? 'on' : ''}" data-act="auth-mode" data-mode="signup">注册</button>
@@ -210,13 +285,12 @@ function viewSetup() {
     <p class="sub">${esc(S.user.email || '')}</p>
     <form data-form="create" class="card-form" novalidate>
       <b>我是 Kalshi 账户持有人</b>
-      <span class="sub">下单和记账都是你。建好之后把邀请码发给朋友。</span>
+      <span class="sub">创建账本后，邀请朋友加入</span>
       <input class="in" name="name" id="owner-name" placeholder="你的称呼，比如 小明" maxlength="20" required>
       <button class="cta" type="submit">创建账本</button>
     </form>
     <form data-form="join" class="card-form" novalidate>
       <b>我是跟单的朋友</b>
-      <span class="sub">输入持有人发给你的邀请码。</span>
       <input class="in" name="code" id="invite-code" placeholder="邀请码" autocapitalize="characters" autocomplete="off" required>
       <input class="in" name="name" id="partner-name" placeholder="你的称呼" maxlength="20" required>
       <button class="cta ghost" type="submit">加入账本</button>
@@ -231,19 +305,20 @@ function chartSVG() {
   const pts = [0];
   for (const t of S.r.timeline) if (t.realized !== pts[pts.length - 1]) pts.push(t.realized);
   if (pts.length < 2) return '';
-  const W = 268, H = 92, pad = 7;
+  const W = 300, H = 100, pad = 12;
   let min = Math.min(0, ...pts), max = Math.max(0, ...pts);
   if (max === min) max = min + 1;
-  const x = (i) => 3 + (i * (W - 10)) / (pts.length - 1);
+  const x = (i) => 4 + (i * (W - 64)) / (pts.length - 1);
   const y = (v) => pad + ((max - v) / (max - min)) * (H - pad * 2);
   const d = pts.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
   const last = pts[pts.length - 1];
   const col = last >= 0 ? 'var(--up)' : 'var(--down)';
   const who = isOwner() ? fullName('partner') : '我';
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(who)}的已结算盈亏走势，现在 ${signed(last)}">
-    <line x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" class="base"/>
-    <path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(last).toFixed(1)}" r="4" fill="${col}"/>
+  return `<div class="chart-meta"><span>累计已结算盈亏</span><span>按记录顺序</span></div>
+  <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(who)}的已结算盈亏走势，现在 ${signed(last)}">
+    ${[max, (min + max) / 2, min].map((v) => `<line x1="0" x2="${W - 52}" y1="${y(v)}" y2="${y(v)}" class="chart-grid"/><text x="${W}" y="${y(v) + 4}" text-anchor="end" class="chart-label">${esc(dMoney(v))}</text>`).join('')}
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(last).toFixed(1)}" r="3" fill="${col}"/>
   </svg>`;
 }
 
@@ -365,7 +440,6 @@ function kalshiSection() {
   if (!groups.length) return '';
   const ks = S.data.kalshiSync;
   return `<div class="sec-t row">待分配 <span class="more">来自 Kalshi${ks?.last_run_at ? ' · ' + dt(ks.last_run_at) + ' 同步' : ''}</span></div>
-    <p class="sub">${isOwner() ? `点「我的」或「${esc(fullName('partner'))}的」，这笔就记进账本。和你们合买无关的点「忽略」。` : '持有人分配之后会出现在记录里。'}</p>
     <div class="kx-list">${groups.map((g) => kalshiRow(g)).join('')}</div>`;
 }
 
@@ -375,15 +449,15 @@ function viewHome() {
   const realLabel = isOwner() ? `${fullName('partner')}已结算盈亏` : '我的已结算盈亏';
   let banners = '';
   if (isOwner() && !L().partner_id) {
-    banners += `<div class="banner"><div><b>把邀请码发给朋友</b><span class="sub">他注册登录后选「我是跟单的朋友」，输入邀请码。</span></div>
+    banners += `<div class="banner"><div><b>邀请朋友加入账本</b></div>
       <button type="button" class="pill" data-act="copy" data-text="${esc(L().invite_code)}">${esc(L().invite_code)} · 复制</button></div>`;
   }
   if (!isOwner() && pending.length) {
-    banners += `<div class="banner warn"><div><b>${pending.length} 条记录等你确认</b><span class="sub">在「记录」里可以逐条看。没问题就点确认。</span></div>
+    banners += `<div class="banner warn"><div><b>${pending.length} 条记录等你确认</b></div>
       <button type="button" class="pill" data-act="confirm-all">全部确认</button></div>`;
   }
   if (isOwner() && L().partner_id && pending.length) {
-    banners += `<div class="banner"><div><b>${pending.length} 条等${esc(fullName('partner'))}确认</b><span class="sub">他在 App 里点确认，或者发张对账单给他。</span></div>
+    banners += `<div class="banner"><div><b>${pending.length} 条等${esc(fullName('partner'))}确认</b></div>
       <a class="pill" href="#/statement">对账单</a></div>`;
   }
   if (r.problems.length) {
@@ -392,18 +466,18 @@ function viewHome() {
   const open = openGames();
   const recent = [...S.data.events].sort((a, b2) => b2.id - a.id).slice(0, 5);
   return `
-    <div class="hdr"><a class="hdr-set" href="#/settings"><span class="avs">${av('owner')}${av('partner')}</span><span class="set-l">设置 ›</span></a>
+    <div class="hdr"><a class="hdr-set" href="#/settings"><span class="avs">${av('owner')}${av('partner')}</span><span class="brand-label">合买账本<small>账户与设置</small></span></a>
       <div class="hdr-r"><div class="cur-seg" role="group" aria-label="显示货币">
         <button type="button" data-act="cur" data-cur="USD" class="${S.cur === 'USD' ? 'on' : ''}" aria-pressed="${S.cur === 'USD'}">$</button>
         <button type="button" data-act="cur" data-cur="CNY" class="${S.cur === 'CNY' ? 'on' : ''}" aria-pressed="${S.cur === 'CNY'}">¥</button></div>
       <a class="chip-btn" href="#/statement">${ICON.share}对账单</a></div></div>
-    <div class="hero-n">
+    <section class="overview-card" aria-label="往来余额"><div class="hero-n">
       <span class="lbl">${esc(balanceLabel(b))}</span>
       <span class="big num">${dMoney(Math.abs(b))}</span>
       <span class="chg"><span class="${tone(real)}">${real >= 0 ? '▲' : '▼'} ${dMoney(Math.abs(real))}</span> ${esc(realLabel)}${r.openBasis.partner ? ` · 持仓成本 ${dMoney(r.openBasis.partner)}` : ''}</span>
       ${S.cur === 'CNY' ? `<span class="fx-line num">${showCny() ? `≈ ${money(Math.abs(b))} · ${esc(fxNote())}` : '还没有汇率：在设置里填一个约定汇率，或者等 Kalshi 同步自动更新'}</span>` : ''}
     </div>
-    ${chartSVG()}
+    ${chartSVG()}</section>
     ${banners}
     ${isOwner() ? '<div class="btns"><a class="cta" href="#/fill">记一笔成交</a><a class="cta ghost" href="#/transfer">记转账</a></div>' : ''}
     ${kalshiSection()}
@@ -712,9 +786,9 @@ function curveSVG(curve) {
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="累计盈亏：${esc(nameOf('owner'))} ${signed(last.owner)}，${esc(nameOf('partner'))} ${signed(last.partner)}">
       <line class="base" x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>
       <path d="${path('owner')}" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="${path('partner')}" fill="none" stroke="var(--friend)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${path('partner')}" fill="none" stroke="var(--series-friend)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
       <circle cx="${x(n).toFixed(1)}" cy="${y(last.owner).toFixed(1)}" r="3.5" fill="var(--ink)"/>
-      <circle cx="${x(n).toFixed(1)}" cy="${y(last.partner).toFixed(1)}" r="3.5" fill="var(--friend)"/>
+      <circle cx="${x(n).toFixed(1)}" cy="${y(last.partner).toFixed(1)}" r="3.5" fill="var(--series-friend)"/>
     </svg>
     <div class="legend2"><span><i class="dot me"></i>${esc(nameOf('owner'))} <b class="num ${tone(last.owner)}">${signed(last.owner)}</b></span>
       <span><i class="dot fr"></i>${esc(nameOf('partner'))} <b class="num ${tone(last.partner)}">${signed(last.partner)}</b></span></div>`;
@@ -754,7 +828,7 @@ function viewStats() {
       ${row('比市场准', (h) => `<span class="v num ${tone(acc[h].edge || 0)}">${edgeText(acc[h].edge)}</span>`)}
     </div>
     ${verdict}
-    <span class="sub">买入价就是市场给的胜率：花 40¢ 买，等于市场认为有 40% 会赢。押中率比平均买入价高，说明比市场看得准。</span>
+    <span class="sub">比市场准 = 押中率 − 平均买入价</span>
 
     <div class="sec-t">押热门还是押冷门</div>
     <div class="cmp buckets">${head}
@@ -762,10 +836,10 @@ function viewStats() {
     </div>
 
     <div class="sec-t">球队</div>
-    ${x.best.length ? `<span class="field-l">最会给你们送钱</span><div class="list">${x.best.map(teamRow).join('')}</div>` : ''}
-    ${x.worst.length ? `<span class="field-l">最坑</span><div class="list">${x.worst.map(teamRow).join('')}</div>` : ''}
-    <span class="sub">按「押这个队赢」统计，你们俩合起来算。</span>`
-    : '<p class="empty">还没有结算过的比赛。结算之后，这里会出现盈亏走势、谁更准、押热门还是冷门、哪个队最会送钱。</p>';
+    ${x.best.length ? `<span class="field-l">收益最多</span><div class="list">${x.best.map(teamRow).join('')}</div>` : ''}
+    ${x.worst.length ? `<span class="field-l">亏损最多</span><div class="list">${x.worst.map(teamRow).join('')}</div>` : ''}
+    <span class="sub">两人合计，串关不计入球队统计</span>`
+    : '<p class="empty">结算后显示战绩</p>';
   return `
     <div class="hdr"><span class="h-t">战绩</span><span class="chip-btn">全部</span></div>
     <div class="cmp">${head}
@@ -774,7 +848,7 @@ function viewStats() {
       ${row('胜负', (h) => `<span class="v num">${s.per[h].wins}–${s.per[h].losses}</span>`)}
       ${row('投入', (h) => `<span class="v num">${money(s.per[h].closedCost)}</span>`)}
     </div>
-    <span class="sub">只算已经结算或卖出的部分。投入 = 这些单的成本（含手续费）。</span>
+    <span class="sub">仅计已结算或卖出的部分，成本含手续费</span>
     ${detail}
     <div class="sec-t">比赛</div>
     ${settled.length ? `<div class="list">${settled.map(gameRow).join('')}</div>` : '<p class="empty">还没有结算过的比赛。</p>'}`;
@@ -788,9 +862,9 @@ function viewRecords() {
   return `
     <div class="hdr"><span class="h-t">记录</span><button type="button" class="chip-btn" data-act="csv">${ICON.down}导出</button></div>
     <div class="tabs2"><a href="#/records" class="${onlyPending ? '' : 'on'}">全部</a><a href="#/records?f=pending" class="${onlyPending ? 'on' : ''}">待确认 ${pending.length || ''}</a></div>
-    ${!isOwner() && pending.length ? `<div class="banner warn"><div><b>${pending.length} 条等你确认</b><span class="sub">点某一条可以看详情。</span></div><button type="button" class="pill" data-act="confirm-all">全部确认</button></div>` : ''}
+    ${!isOwner() && pending.length ? `<div class="banner warn"><div><b>${pending.length} 条等你确认</b></div><button type="button" class="pill" data-act="confirm-all">全部确认</button></div>` : ''}
     ${list.length ? `<div class="list">${list.map(eventRow).join('')}</div>` : `<p class="empty">${onlyPending ? '没有待确认的记录。' : '还没有记录。'}</p>`}
-    <span class="sub center">记录只加不改。记错了点那一条，选「撤销」，再重新记。</span>`;
+    <span class="sub center">记错可撤销，原记录保留</span>`;
 }
 
 function openEvent(id) {
@@ -866,7 +940,7 @@ function viewStatement() {
   return `
     <div class="nav"><a class="x" href="#/" aria-label="返回">‹</a><div class="nav-t"><b>对账单</b><span class="sub">${cur ? `#${cur.st.no}${isNew ? ' · 还没发' : ''}` : ''}</span></div><span></span></div>
     ${cur ? `
-      <p class="sub">${isOwner() ? '点「分享图片」发到微信，或者长按图片保存。他看完回一句确认，你在下面点「他回了确认」。' : '持有人发给你的对账单。没问题就点确认。'}</p>
+      <p class="sub">${isOwner() ? '发给朋友，收到确认后再标记' : '请核对金额后确认'}</p>
       <div class="stmt-preview"><img id="stmt-img" alt="对账单 #${cur.st.no}"></div>
       ${isOwner() ? `<div class="btns"><button type="button" class="cta" data-act="statement-share">${ICON.share}分享图片</button><button type="button" class="cta ghost" data-act="statement-copy">复制文字</button></div>` : ''}`
       : '<p class="empty">还没有对账单。</p>'}
@@ -878,8 +952,7 @@ async function ensureStatement() {
   const cur = currentStatement();
   if (cur.row) return cur;
   const row = await S.store.createStatement(S.ledger.id, cur.st.balance, cur.st.uptoEventId);
-  await reload();
-  render();
+  if (!await finishWrite('对账单已创建')) return null;
   const st = statementFor(row);
   return { row, st };
 }
@@ -913,7 +986,7 @@ function fxSettings() {
       <p class="err" id="fx-err" hidden></p>
       <div class="btns"><button class="cta" type="submit">保存约定汇率</button>${agreed ? '<button type="button" class="cta ghost" data-act="fx-clear">改回自动汇率</button>' : ''}</div>
     </form>` : `<div class="kv"><span class="sub">约定汇率</span><b class="num">${agreed ? agreed.toFixed(4) : '没有约定，用自动汇率'}</b></div>`}
-    <span class="sub">填了约定汇率，你们俩看到的人民币金额都按它算。首页右上角「$ / ¥」切换显示货币，对账单上也会多一行人民币。</span>`;
+    <span class="sub">人民币仅作换算显示，账目始终以美元记录</span>`;
 }
 
 function kalshiSettings() {
@@ -923,7 +996,7 @@ function kalshiSettings() {
   const status = ks
     ? `<div class="kv"><span class="sub">状态</span><b>${ks.last_run_at ? `${dt(ks.last_run_at)} 同步，新导入 ${ks.last_imported ?? 0} 条` : '已设置，还没同步过'}</b></div>
        <div class="kv"><span class="sub">从这天的成交开始导入</span><b class="num">${esc(ks.since)}</b></div>`
-    : '<p class="sub">每小时自动把 Kalshi 上 NBA 单场胜负和所有 Combo 串关的成交拉进「待分配」，你只需要点「我的」或「朋友的」。按官方结果和实际赔付自动结算。</p>';
+    : '<p class="sub">每小时导入 NBA 胜负和串关成交，按官方赔付结算</p>';
   const token = S.kxToken ? `<div class="token-box">
       <b>同步令牌（只显示这一次，关掉就看不到了）</b>
       <code class="tok">${esc(S.kxToken)}</code>
@@ -955,6 +1028,7 @@ async function newSyncToken() {
 
 // ───────────── 点击 ─────────────
 const ACTIONS = {
+  'refresh-saved': refreshSavedWrite,
   back() { if (history.length > 1) history.back(); else location.hash = '#/'; },
   'auth-mode'(el) { S.authMode = el.dataset.mode; render(); },
   async signout() { await S.store.signOut(); S.user = null; S.ledger = null; render(); },
@@ -967,7 +1041,7 @@ const ACTIONS = {
     if (!ok) return;
     const upto = Math.max(...pending.map((e) => e.id));
     const n = await S.store.confirmEvents(S.ledger.id, upto);
-    await reload(); render(); toast(`已确认 ${n} 条`);
+    await finishWrite(`已确认 ${n} 条`);
   },
   async settle(el) {
     const g = S.r.games.find((x) => x.id === el.dataset.game);
@@ -981,7 +1055,7 @@ const ACTIONS = {
     });
     if (!ok) return;
     await S.store.addEvent({ ledger_id: S.ledger.id, kind: 'settle', game_id: g.id, winner });
-    await reload(); render(); toast('已结算');
+    await finishWrite('已结算');
   },
   async void(el) {
     const id = Number(el.dataset.id);
@@ -989,7 +1063,7 @@ const ACTIONS = {
     const reason = await ask({ title: `撤销 #${id}？`, body: '原记录会保留，加一条撤销记录，所有数字重新计算。', input: '原因（可不填），比如 价格记错了', ok: '撤销', danger: true });
     if (reason === null) return;
     await S.store.addEvent({ ledger_id: S.ledger.id, kind: 'void', voids: id, note: reason || null });
-    await reload(); render(); toast(`已撤销 #${id}`);
+    await finishWrite(`已撤销 #${id}`);
   },
   csv() {
     const csv = toCSV(S.data.events, S.data.games, { owner: L().owner_name, partner: L().partner_name || '朋友' });
@@ -1004,7 +1078,9 @@ const ACTIONS = {
   async 'statement-share'(el) {
     el.disabled = true;
     try {
-      const { row, st } = await ensureStatement();
+      const current = await ensureStatement();
+      if (!current) return;
+      const { row, st } = current;
       const m = statementModel(st, S.data.games, row.created_at, fxRate());
       const canvas = drawStatement(m);
       const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
@@ -1019,7 +1095,9 @@ const ACTIONS = {
     } finally { el.disabled = false; }
   },
   async 'statement-copy'() {
-    const { row, st } = await ensureStatement();
+    const current = await ensureStatement();
+    if (!current) return;
+    const { row, st } = current;
     await copyText(statementText(statementModel(st, S.data.games, row.created_at, fxRate())));
     toast('文字已复制，去微信粘贴');
   },
@@ -1030,7 +1108,7 @@ const ACTIONS = {
       : { title: `确认对账单 #${s.no}？`, body: '确认表示这张对账单上的金额没问题。', ok: '确认' });
     if (!ok) return;
     await S.store.confirmStatement(s.id);
-    await reload(); render(); toast('已确认');
+    await finishWrite('已确认');
   },
   'demo-role'(el) { S.store.setDemoRole(el.dataset.role); },
   cur(el) {
@@ -1040,16 +1118,14 @@ const ACTIONS = {
   },
   async 'fx-clear'() {
     await S.store.setLedgerFx(S.ledger.id, null);
-    S.ledger = await S.store.myLedger();
-    await reload(); render(); toast('改回自动汇率');
+    await finishWrite('已改回自动汇率', { ledger: true });
   },
   async 'kx-assign'(el) {
     const ids = el.dataset.ids.split(',');
     const holder = el.dataset.holder;
     for (const b of el.closest('.kx').querySelectorAll('button')) b.disabled = true;
     for (const id of ids) await S.store.assignKalshi(S.ledger.id, id, holder);
-    await reload(); render();
-    toast(holder === 'partner' ? `已记给${fullName('partner')}` : '已记给我');
+    await finishWrite(holder === 'partner' ? `已记给${fullName('partner')}` : '已记给我');
   },
   async 'kx-ignore'(el) {
     const ids = el.dataset.ids.split(',');
@@ -1059,8 +1135,7 @@ const ACTIONS = {
       if (!ok) return;
     }
     for (const id of ids) await S.store.ignoreKalshi(S.ledger.id, id, ignore);
-    await reload(); render();
-    toast(ignore ? '已忽略' : '已放回待分配');
+    await finishWrite(ignore ? '已忽略' : '已放回待分配');
   },
 };
 
@@ -1086,8 +1161,7 @@ const FORMS = {
     const t = String(new FormData(f).get('rate') || '').trim();
     if (!/^\d{1,2}(\.\d{1,4})?$/.test(t) || Number(t) < 1 || Number(t) > 20) return showErr(f, 'fx-err', '汇率填 1 到 20 之间的数，最多 4 位小数，比如 7.2');
     await S.store.setLedgerFx(S.ledger.id, Number(t));
-    S.ledger = await S.store.myLedger();
-    await reload(); render(); toast('约定汇率已保存');
+    await finishWrite('约定汇率已保存', { ledger: true });
   },
   async 'kx-token'(f) {
     const since = new FormData(f).get('since');
@@ -1099,8 +1173,7 @@ const FORMS = {
     const { token, hash } = await newSyncToken();
     await S.store.setKalshiSync(S.ledger.id, hash, since);
     S.kxToken = token;
-    await reload(); render();
-    toast('令牌生成好了，复制到 GitHub');
+    await finishWrite('令牌生成好了，复制到 GitHub');
   },
   async auth(f) {
     const { email, password } = Object.fromEntries(new FormData(f));
@@ -1118,15 +1191,13 @@ const FORMS = {
     const name = new FormData(f).get('name').trim();
     if (!name) return showErr(f, 'setup-err', '填一下你的称呼');
     S.ledger = await S.store.createLedger(name);
-    await enter();
-    toast('账本建好了，把邀请码发给朋友');
+    await finishWrite('账本已创建，可邀请朋友加入', { ledger: true });
   },
   async join(f) {
     const v = Object.fromEntries(new FormData(f));
     if (!v.code.trim() || !v.name.trim()) return showErr(f, 'setup-err', '填上邀请码和你的称呼');
-    await S.store.joinLedger(v.code.trim(), v.name.trim());
-    await enter();
-    toast('加入成功');
+    S.ledger = await S.store.joinLedger(v.code.trim(), v.name.trim());
+    await finishWrite('加入成功', { ledger: true });
   },
   async fill(f) {
     const v = readFill(f);
@@ -1142,9 +1213,7 @@ const FORMS = {
       contracts: v.contracts, price_cents: Number.isInteger(v.price) ? v.price : null, notional_cents: v.notional,
       fee_cents: v.fee, occurred_at: v.at.toISOString(), note: v.note,
     });
-    await reload();
-    toast('已保存');
-    location.hash = `#/game/${encodeURIComponent(gameId)}`;
+    await finishWrite('已保存', { hash: `#/game/${encodeURIComponent(gameId)}` });
   },
   async transfer(f) {
     const v = Object.fromEntries(new FormData(f));
@@ -1156,9 +1225,7 @@ const FORMS = {
       ledger_id: S.ledger.id, kind: 'transfer', direction: v.direction, amount_cents: amt, method: v.method,
       occurred_at: at.toISOString(), note: (v.note || '').trim() || null,
     });
-    await reload();
-    toast('已保存');
-    location.hash = '#/';
+    await finishWrite('已保存', { hash: '#/' });
   },
 };
 
@@ -1166,6 +1233,8 @@ document.addEventListener('submit', async (ev) => {
   const f = ev.target.closest('form[data-form]');
   if (!f) return;
   ev.preventDefault();
+  if (S.savedWrite || f.dataset.submitting) return;
+  f.dataset.submitting = '1';
   const btn = f.querySelector('[type="submit"]');
   if (btn) btn.disabled = true;
   try {
@@ -1175,6 +1244,7 @@ document.addEventListener('submit', async (ev) => {
     const errEl = f.querySelector('.err') || document.getElementById('setup-err');
     if (errEl) { errEl.textContent = err.message || String(err); errEl.hidden = false; } else toast(err.message, true);
   } finally {
+    delete f.dataset.submitting;
     if (btn && btn.isConnected) btn.disabled = false;
   }
 });
@@ -1200,10 +1270,10 @@ $tabbar.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$sheet.hidden) closeSheet(); });
 document.addEventListener('visibilitychange', async () => {
-  if (document.hidden || !S.ledger) return;
+  if (document.hidden || !S.ledger || S.savedWrite) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return; // 别打断正在填的表单
-  try { await reload(); render(); } catch { /* 下次再试 */ }
+  try { await reload(); render(); } catch (err) { toast(`更新未完成，当前账目已保留：${err.message}`, true); }
 });
 
 // 从 github.io 打开时，如果国内用的新网址能访问，就跳过去（打不开就留在这里）
@@ -1223,6 +1293,7 @@ async function boot() {
   moveToPublicUrl();
   try {
     S.store = createStore();
+    showLoading('正在确认登录状态');
     S.user = await S.store.user();
     S.store.onAuth(async (u) => {
       if ((u?.id ?? null) === (S.user?.id ?? null)) return;
@@ -1231,6 +1302,7 @@ async function boot() {
     });
     await enter();
   } catch (err) {
+    $loading.hidden = true;
     console.error(err);
     $app.innerHTML = `<div class="auth"><h1 class="h-t">打不开</h1><p class="sub">${esc(err.message || String(err))}</p><button class="cta" type="button" onclick="location.reload()">重试</button></div>`;
   }
