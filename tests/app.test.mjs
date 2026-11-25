@@ -97,6 +97,39 @@ test('对账单创建成功后刷新失败，恢复读取后分享复用原单�
   assert.equal(created, 1);
 });
 
+test('分配在首页显示进度，读取失败后重试不会再次分配', async () => {
+  const app = await appFixture();
+  app.location.hash = '#/';
+  app.render();
+  const home = app.nodes.get('app').innerHTML;
+  let release;
+  const writing = new Promise(resolve => { release = resolve; });
+  const ids = [];
+  app.S.store.assignKalshi = async (_ledger, id) => {
+    ids.push(id);
+    await writing;
+    app.data.kalshi = app.data.kalshi.filter(k => k.id !== id);
+  };
+  const button = { dataset: { ids: 'demo-k1,demo-k2', holder: 'owner' } };
+  const assign = app.ACTIONS['kx-assign'](button);
+  assert.equal(app.nodes.get('app').innerHTML, home);
+  assert.match(app.nodes.get('load-label').textContent, /正在分配 1\/2/);
+  await app.ACTIONS['kx-assign'](button);
+  assert.deepEqual(ids, ['demo-k1']);
+  release();
+  await assign;
+  assert.equal(app.nodes.get('app').innerHTML, home);
+  assert.match(app.nodes.get('load-label').textContent, /已记给我，刷新未完成/);
+  assert.equal(app.nodes.get('load-retry').hidden, false);
+  app.recover();
+  await app.ACTIONS['kx-refresh']();
+  assert.deepEqual(ids, ['demo-k1', 'demo-k2']);
+  assert.equal(app.location.hash, '#/');
+  assert.equal(app.nodes.get('load-status').hidden, true);
+  assert.match(app.nodes.get('app').innerHTML, /overview-card/);
+  assert.doesNotMatch(app.nodes.get('app').innerHTML, /data-ids="demo-k1/);
+});
+
 test('表单处理中重复触发提交事件只写一笔，写入失败仍允许修正后重试', async () => {
   const app = await appFixture();
   let release, calls = 0;
