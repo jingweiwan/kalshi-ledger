@@ -1,7 +1,7 @@
 // 数据存取：Supabase（正式）或内存（示例模式），两者接口一样。
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mwnc5jvn';
-import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mwnc5jvn';
-import { compute } from './ledger.js?v=mwnc5jvn';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PUBLIC_URL, VIA_PROXY } from './config.js?v=mwvwfd2c';
+import { sampleData, SAMPLE_OWNER_ID, SAMPLE_PARTNER_ID } from './sample.js?v=mwvwfd2c';
+import { compute } from './ledger.js?v=mwvwfd2c';
 
 export function createStore() {
   const wantsDemo = new URLSearchParams(location.search).has('demo');
@@ -89,7 +89,7 @@ function supabaseStore() {
     async joinLedger(code, partnerName) {
       return unwrap(await sb.rpc('join_ledger', { p_code: code, p_partner_name: partnerName }));
     },
-    async load(ledgerId, onProgress = () => {}) {
+    async load(ledgerId, onProgress = () => {}, { requireKalshi = false } = {}) {
       const labels = ['比赛和串关', '成交与转账记录', '历史对账单', '待分配成交', '同步状态', '显示汇率'];
       const pending = new Set(labels);
       const report = () => onProgress({ completed: labels.length - pending.size, total: labels.length, pending: [...pending] });
@@ -104,8 +104,11 @@ function supabaseStore() {
         track(labels[0], () => pageAll(() => sb.from('games').select('*').eq('ledger_id', ledgerId).order('created_at'))),
         track(labels[1], () => pageAll(() => sb.from('events').select('*').eq('ledger_id', ledgerId).order('id'))),
         track(labels[2], () => pageAll(() => sb.from('statements').select('*').eq('ledger_id', ledgerId).order('no'))),
-        // 还没运行新版 schema.sql 时这张表不存在，就当没有
-        track(labels[3], () => pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch(() => [])),
+        // 普通加载兼容旧账本。Kalshi 操作后必须读到最新状态，才恢复操作按钮。
+        track(labels[3], () => pageAll(() => sb.from('kalshi_fills').select('*').eq('ledger_id', ledgerId).neq('status', 'assigned').order('occurred_at')).catch((err) => {
+          if (requireKalshi) throw err;
+          return [];
+        })),
         track(labels[4], () => sb.rpc('kalshi_sync_status', { p_ledger: ledgerId }).then((r) => (r.error ? null : r.data))),
         track(labels[5], () => sb.from('fx_rates').select('*').eq('pair', 'USDCNY').maybeSingle().then((r) => (r.error ? null : r.data))),
       ]);

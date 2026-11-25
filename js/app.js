@@ -1,24 +1,27 @@
 // 合买账本 · 页面
-import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES, gameTitle, sideName, settlementLabel } from './ledger.js?v=mwnc5jvn';
-import { createStore } from './store.js?v=mwnc5jvn';
-import { PUBLIC_URL } from './config.js?v=mwnc5jvn';
-import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mwnc5jvn';
-import { statementModel, statementText, drawStatement } from './statement-image.js?v=mwnc5jvn';
+import { compute, stats, insights, BUCKETS, statement, estimateFee, needsConfirm, fillAmount, notional, avgFillPrice, toCSV, toUnits, SIDES, gameTitle, sideName, settlementLabel } from './ledger.js?v=mwvwfd2c';
+import { createStore } from './store.js?v=mwvwfd2c';
+import { PUBLIC_URL } from './config.js?v=mwvwfd2c';
+import { esc, money, signed, price, pct, tone, dt, day, when, full, localInput, parseMoney, qty, parseQty } from './format.js?v=mwvwfd2c';
+import { statementModel, statementText, drawStatement } from './statement-image.js?v=mwvwfd2c';
 
 const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
 const $toast = document.getElementById('toast');
 const $sheet = document.getElementById('sheet');
 const $loading = document.getElementById('load-status');
+const $loadProgress = document.getElementById('load-progress');
+const $loadRetry = document.getElementById('load-retry');
 let loadingRun = 0;
 
 function showLoading(label, completed = null, total = 1) {
   $loading.hidden = false;
   $loading.classList.toggle('compact', Boolean(S.r));
   document.getElementById('load-label').textContent = label;
-  const bar = document.getElementById('load-progress');
-  bar.max = total;
-  if (completed == null) bar.removeAttribute('value'); else bar.value = completed;
+  $loadRetry.hidden = true;
+  $loadProgress.hidden = false;
+  $loadProgress.max = total;
+  if (completed == null) $loadProgress.removeAttribute('value'); else $loadProgress.value = completed;
   document.getElementById('load-detail').textContent = completed == null ? '正在连接，请稍候' : `已完成 ${completed} / ${total} 项`;
 }
 
@@ -27,7 +30,7 @@ const S = {
   data: { games: [], events: [], statements: [] }, r: null,
   gameById: new Map(), eventById: new Map(),
   params: { id: null, q: new URLSearchParams() },
-  authMode: 'signin', after: null, lastHash: null, savedWrite: null,
+  authMode: 'signin', after: null, lastHash: null, savedWrite: null, kalshiWrite: null,
   cur: (() => { try { return localStorage.getItem('kl.cur') === 'CNY' ? 'CNY' : 'USD'; } catch { return 'USD'; } })(),
 };
 
@@ -128,25 +131,33 @@ function download(blob, name) {
 }
 
 // ───────────── 数据 ─────────────
-async function reload() {
+async function reload({ requireKalshi = false } = {}) {
   const run = ++loadingRun;
+  const ledgerId = S.ledger.id, userId = S.user?.id;
+  const isCurrent = () => run === loadingRun && S.ledger?.id === ledgerId && S.user?.id === userId;
   showLoading(S.r ? '正在更新账目' : '正在获取账目', 0, 6);
   try {
-    const data = await S.store.load(S.ledger.id, ({ completed, total, pending }) => {
-      if (run === loadingRun) showLoading(pending.length ? `正在获取${pending[0]}` : '正在整理账目', completed, total);
-    });
-    if (run !== loadingRun) return;
+    const data = await S.store.load(ledgerId, ({ completed, total, pending }) => {
+      if (isCurrent()) showLoading(pending.length ? `正在获取${pending[0]}` : '正在整理账目', completed, total);
+    }, { requireKalshi });
+    if (!isCurrent()) return false;
     S.data = data;
     S.r = compute(data.events, data.games);
     S.gameById = new Map(data.games.map((g) => [g.id, g]));
     S.eventById = new Map(data.events.map((e) => [e.id, e]));
+    return true;
   } finally {
-    if (run === loadingRun) { loadingRun++; $loading.hidden = true; }
+    if (run === loadingRun) {
+      loadingRun++;
+      $loading.hidden = true;
+      if (S.kalshiWrite && !S.kalshiWrite.busy) showKalshiRetry(S.kalshiWrite);
+    }
   }
 }
 
 async function enter() {
   S.savedWrite = null;
+  S.kalshiWrite = null;
   S.ledger = null;
   if (!S.user) { $loading.hidden = true; return render(); }
   showLoading('正在读取账本信息');
@@ -422,12 +433,13 @@ function kalshiRow(g, { buttons = true, restore = false } = {}) {
   const ids = esc(g.ids.join(','));
   let btns = '';
   if (buttons && isOwner()) {
+    const disabled = S.kalshiWrite ? ' disabled' : '';
     btns = restore
-      ? `<div class="kx-btns"><button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="0">恢复到待分配</button></div>`
+      ? `<div class="kx-btns"><button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="0"${disabled}>恢复到待分配</button></div>`
       : `<div class="kx-btns">
-          <button type="button" class="kx-b me" data-act="kx-assign" data-ids="${ids}" data-holder="owner">我的</button>
-          <button type="button" class="kx-b fr" data-act="kx-assign" data-ids="${ids}" data-holder="partner">${esc(fullName('partner'))}的</button>
-          <button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="1">忽略</button></div>`;
+          <button type="button" class="kx-b me" data-act="kx-assign" data-ids="${ids}" data-holder="owner"${disabled}>我的</button>
+          <button type="button" class="kx-b fr" data-act="kx-assign" data-ids="${ids}" data-holder="partner"${disabled}>${esc(fullName('partner'))}的</button>
+          <button type="button" class="kx-b ghost" data-act="kx-ignore" data-ids="${ids}" data-ignore="1"${disabled}>忽略</button></div>`;
   }
   return `<div class="kx">
     <div class="kx-h"><div class="li-main"><b>${g.action === 'buy' ? '买入' : '卖出'} ${esc(sideName(g, g.side))} ${qty(c)}张 @${price(g.notional / c)}</b>
@@ -1026,12 +1038,60 @@ async function newSyncToken() {
   return { token, hash };
 }
 
+async function updateKalshi(ids, label, message, write) {
+  if (S.kalshiWrite) return;
+  const update = { message, busy: true, error: null };
+  S.kalshiWrite = update;
+  loadingRun++; // 作废操作开始前发出的后台刷新。
+  const ledgerId = S.ledger.id;
+  for (const button of $app.querySelectorAll('.kx-btns button')) button.disabled = true;
+  let completed = 0;
+  try {
+    for (const id of ids) {
+      showLoading(`正在${label} ${completed + 1}/${ids.length}`, completed, ids.length);
+      await write(ledgerId, id);
+      if (S.kalshiWrite !== update) return;
+      completed++;
+    }
+  } catch (err) {
+    update.error = `${label}未完成（已处理 ${completed}/${ids.length} 笔）：${err.message || String(err)}`;
+  }
+  update.busy = false;
+  await refreshKalshi();
+}
+
+async function refreshKalshi() {
+  const update = S.kalshiWrite;
+  if (!update || update.busy) return;
+  update.busy = true;
+  try {
+    const refreshed = await reload({ requireKalshi: true });
+    if (S.kalshiWrite !== update) return;
+    if (!refreshed) throw new Error('读取已中断');
+  } catch {
+    if (S.kalshiWrite !== update) return;
+    update.busy = false;
+    showKalshiRetry(update);
+    return;
+  }
+  S.kalshiWrite = null;
+  render();
+  toast(update.error || update.message, Boolean(update.error));
+}
+
+function showKalshiRetry(update) {
+  showLoading(update.error ? '成交结果待核对，刷新未完成' : `${update.message}，刷新未完成`);
+  $loadProgress.hidden = true;
+  $loadRetry.hidden = false;
+}
+
 // ───────────── 点击 ─────────────
 const ACTIONS = {
   'refresh-saved': refreshSavedWrite,
+  'kx-refresh': refreshKalshi,
   back() { if (history.length > 1) history.back(); else location.hash = '#/'; },
   'auth-mode'(el) { S.authMode = el.dataset.mode; render(); },
-  async signout() { await S.store.signOut(); S.user = null; S.ledger = null; render(); },
+  async signout() { await S.store.signOut(); S.user = null; await enter(); },
   async copy(el) { await copyText(el.dataset.text); toast('已复制'); },
   event(el) { openEvent(Number(el.dataset.id)); },
   async 'confirm-all'() {
@@ -1123,19 +1183,19 @@ const ACTIONS = {
   async 'kx-assign'(el) {
     const ids = el.dataset.ids.split(',');
     const holder = el.dataset.holder;
-    for (const b of el.closest('.kx').querySelectorAll('button')) b.disabled = true;
-    for (const id of ids) await S.store.assignKalshi(S.ledger.id, id, holder);
-    await finishWrite(holder === 'partner' ? `已记给${fullName('partner')}` : '已记给我');
+    await updateKalshi(ids, '分配', holder === 'partner' ? `已记给${fullName('partner')}` : '已记给我',
+      (ledgerId, id) => S.store.assignKalshi(ledgerId, id, holder));
   },
   async 'kx-ignore'(el) {
+    if (S.kalshiWrite) return;
     const ids = el.dataset.ids.split(',');
     const ignore = el.dataset.ignore === '1';
     if (ignore) {
       const ok = await ask({ title: '忽略这笔？', body: '不记进账本。比如和你们合买无关的单。以后可以在设置里恢复。', ok: '忽略' });
       if (!ok) return;
     }
-    for (const id of ids) await S.store.ignoreKalshi(S.ledger.id, id, ignore);
-    await finishWrite(ignore ? '已忽略' : '已放回待分配');
+    await updateKalshi(ids, ignore ? '忽略' : '恢复', ignore ? '已忽略' : '已放回待分配',
+      (ledgerId, id) => S.store.ignoreKalshi(ledgerId, id, ignore));
   },
 };
 
@@ -1270,10 +1330,10 @@ $tabbar.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$sheet.hidden) closeSheet(); });
 document.addEventListener('visibilitychange', async () => {
-  if (document.hidden || !S.ledger || S.savedWrite) return;
+  if (document.hidden || !S.ledger || S.savedWrite || S.kalshiWrite) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return; // 别打断正在填的表单
-  try { await reload(); render(); } catch (err) { toast(`更新未完成，当前账目已保留：${err.message}`, true); }
+  try { if (await reload()) render(); } catch (err) { if (!S.kalshiWrite) toast(`更新未完成，当前账目已保留：${err.message}`, true); }
 });
 
 // 从 github.io 打开时，如果国内用的新网址能访问，就跳过去（打不开就留在这里）

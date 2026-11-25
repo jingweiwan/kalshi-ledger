@@ -13,14 +13,15 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="styles.css?v=mwnc5jvn">
+  <link rel="stylesheet" href="styles.css?v=mwvwfd2c">
 </head>
 <body>
-  <aside id="load-status" class="load-status" role="status" aria-live="polite">
+  <aside id="load-status" class="load-status">
     <strong>合买账本</strong>
-    <span id="load-label">正在准备页面</span>
-    <progress id="load-progress" aria-label="账本读取进度"></progress>
+    <span id="load-label" role="status">正在准备页面</span>
+    <progress id="load-progress" aria-label="账本处理进度"></progress>
     <small id="load-detail">正在初始化，请稍候</small>
+    <button id="load-retry" class="pill small" type="button" data-act="kx-refresh" hidden>重新读取账目</button>
   </aside>
   <main id="app"></main>
   <nav id="tabbar" class="tabbar" hidden aria-label="主导航">
@@ -34,7 +35,7 @@
   <button id="totop" class="totop" type="button" hidden aria-label="回到顶部">↑</button>
   <div id="sheet" class="sheet" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script src="vendor/supabase.js?v=mwnc5jvn"></script>
-  <script type="module" src="js/app.js?v=mwnc5jvn"></script>
+  <script src="vendor/supabase.js?v=mwvwfd2c"></script>
+  <script type="module" src="js/app.js?v=mwvwfd2c"></script>
 </body>
 </html>

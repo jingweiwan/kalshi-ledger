@@ -275,3 +275,4 @@ b, strong { font-weight: 500; }
 .load-status progress::-moz-progress-bar { background: var(--up); border-radius: 4px; }
 .load-status.compact { position: fixed; z-index: 24; top: max(8px, env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); width: calc(100% - 32px); max-width: 448px; margin: 0; padding: 12px 16px; gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 4px 16px var(--shadow); }
 .load-status.compact strong, .load-status.compact small { display: none; }
+#load-retry { align-self: start; min-height: 44px; }
